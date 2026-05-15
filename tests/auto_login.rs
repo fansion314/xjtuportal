@@ -1,18 +1,19 @@
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use wiremock::{
-    matchers::{method, path},
     Mock, MockServer, Request, Respond, ResponseTemplate,
+    matchers::{method, path},
 };
 use xjtuportal::{
+    RunStatus,
     config::{
         AccountConfig, AppConfig, InterfaceConfig, LogoutConfig, NetworkConfig, TargetConfig,
     },
     crypto::encrypt_text,
-    run, RunStatus,
+    run,
 };
 
 #[tokio::test]

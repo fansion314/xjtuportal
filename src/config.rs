@@ -13,6 +13,12 @@ use crate::{
     interface::interface_ipv4,
 };
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetworkBinding {
+    pub interface_name: Option<String>,
+    pub local_ip: Option<IpAddr>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
@@ -231,11 +237,15 @@ pub struct ResolvedTarget {
 }
 
 impl ResolvedTarget {
-    pub fn local_ip(&self) -> Result<Option<IpAddr>> {
-        self.interface
-            .as_ref()
-            .map(InterfaceConfig::local_ip)
-            .unwrap_or(Ok(None))
+    pub fn network_binding(&self) -> Result<NetworkBinding> {
+        let Some(interface) = &self.interface else {
+            return Ok(NetworkBinding::default());
+        };
+
+        Ok(NetworkBinding {
+            interface_name: interface.name.clone(),
+            local_ip: interface.local_ip()?,
+        })
     }
 
     pub fn interface_label(&self) -> Option<String> {
@@ -292,8 +302,11 @@ mod tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].id, "wan1-main");
         assert_eq!(
-            targets[0].local_ip().unwrap(),
-            Some("10.180.0.10".parse().unwrap())
+            targets[0].network_binding().unwrap(),
+            NetworkBinding {
+                interface_name: None,
+                local_ip: Some("10.180.0.10".parse().unwrap())
+            }
         );
     }
 

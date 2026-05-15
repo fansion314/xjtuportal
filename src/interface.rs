@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use get_if_addrs::{get_if_addrs, IfAddr};
+use get_if_addrs::{IfAddr, get_if_addrs};
 
 use crate::error::{PortalError, Result};
 

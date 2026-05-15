@@ -22,7 +22,11 @@ password = "change-me"
 
 [[interfaces]]
 id = "wan1"
+# On Linux/OpenWrt this is passed to reqwest::ClientBuilder::interface(),
+# which uses SO_BINDTODEVICE and is stronger than source-IP binding.
 name = "eth0"
+# Optional source-IP binding. This can help pick the address, but mwan3 policy
+# routing may still override it unless `name` is also configured.
 # local_ip = "10.180.0.10"
 mac = "11:22:33:44:55:66"
 

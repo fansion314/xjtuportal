@@ -1,18 +1,16 @@
-use std::net::IpAddr;
-
 use reqwest::{
-    header::{HeaderMap, HeaderValue, ACCEPT_LANGUAGE, CONTENT_TYPE, USER_AGENT},
-    redirect::Policy,
     Client, StatusCode,
+    header::{ACCEPT_LANGUAGE, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT},
+    redirect::Policy,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    config::{AccountConfig, NetworkConfig},
+    config::{AccountConfig, NetworkBinding, NetworkConfig},
     crypto::{decrypt_json, encrypt_json},
     error::{PortalError, Result},
-    log_local_binding,
+    log_network_binding,
     session::{Session, SessionListResponse},
     token_preview,
 };
@@ -24,7 +22,7 @@ pub struct CampusClient {
 }
 
 impl CampusClient {
-    pub fn new(network: NetworkConfig, local_ip: Option<IpAddr>) -> Result<Self> {
+    pub fn new(network: NetworkConfig, binding: NetworkBinding) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(
             USER_AGENT,
@@ -42,12 +40,15 @@ impl CampusClient {
             .default_headers(headers)
             .timeout(network.timeout())
             .redirect(Policy::none());
-        if let Some(ip) = local_ip {
+        if let Some(interface_name) = &binding.interface_name {
+            builder = bind_interface(builder, interface_name);
+        }
+        if let Some(ip) = binding.local_ip {
             builder = builder.local_address(ip);
         }
 
         let http = builder.build()?;
-        log_local_binding("client", local_ip);
+        log_network_binding("client", &binding);
         Ok(Self { http, network })
     }
 
@@ -185,6 +186,41 @@ impl CampusClient {
             .filter(|token| !token.is_empty())
             .ok_or(PortalError::MissingToken)
     }
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "fuchsia",
+    target_os = "illumos",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "solaris",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos",
+))]
+fn bind_interface(builder: reqwest::ClientBuilder, interface_name: &str) -> reqwest::ClientBuilder {
+    builder.interface(interface_name)
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "fuchsia",
+    target_os = "illumos",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "solaris",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos",
+)))]
+fn bind_interface(
+    builder: reqwest::ClientBuilder,
+    _interface_name: &str,
+) -> reqwest::ClientBuilder {
+    builder
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

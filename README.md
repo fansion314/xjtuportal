@@ -24,8 +24,9 @@ xjtuportal --version
 Copy `config.example.toml` to `config.toml` and edit the account, password, and
 optional interface targets. If `[[targets]]` is omitted, the program logs in once
 with `[default_account]` through the default route. If targets are configured,
-they are processed in order; each target may bind requests to a configured local
-IPv4 address or a discovered IPv4 address from the interface name.
+they are processed in order. On Linux/OpenWrt, an interface `name` is bound with
+reqwest's interface binding, which uses `SO_BINDTODEVICE`; optional `local_ip`
+source binding can be configured as an additional hint.
 
 ## Verification
 

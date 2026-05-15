@@ -2,7 +2,7 @@ use std::{path::PathBuf, process::ExitCode};
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
-use xjtuportal::{config::AppConfig, error::PortalError, run, RunStatus};
+use xjtuportal::{RunStatus, config::AppConfig, error::PortalError, run};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Automatic XJTU campus portal login")]

@@ -5,9 +5,7 @@ pub mod interface;
 pub mod portal;
 pub mod session;
 
-use std::net::IpAddr;
-
-use config::{AppConfig, ResolvedTarget};
+use config::{AppConfig, NetworkBinding, ResolvedTarget};
 use error::{PortalError, Result};
 use portal::{CampusClient, LoginStatus, NetworkStatus};
 use session::choose_logout_mac;
@@ -38,14 +36,15 @@ pub async fn run(config: AppConfig) -> Result<RunStatus> {
 }
 
 async fn run_target(config: &AppConfig, target: &ResolvedTarget) -> Result<()> {
-    let local_ip = target.local_ip()?;
-    let client = CampusClient::new(config.network.clone(), local_ip)?;
+    let binding = target.network_binding()?;
+    let client = CampusClient::new(config.network.clone(), binding.clone())?;
 
     info!(
         target = %target.id,
         account = %target.account.username,
         interface = target.interface_label().as_deref().unwrap_or("default"),
-        local_ip = local_ip.map(|ip| ip.to_string()).as_deref().unwrap_or("default"),
+        bind_device = binding.interface_name.as_deref().unwrap_or("default"),
+        local_ip = binding.local_ip.map(|ip| ip.to_string()).as_deref().unwrap_or("default"),
         "checking network"
     );
 
@@ -139,10 +138,12 @@ pub fn token_preview(token: Option<&str>) -> Option<String> {
     token.map(|value| value.chars().take(10).collect())
 }
 
-pub(crate) fn log_local_binding(target_id: &str, local_ip: Option<IpAddr>) {
+pub(crate) fn log_network_binding(target_id: &str, binding: &NetworkBinding) {
     debug!(
         target = target_id,
-        local_ip = local_ip
+        bind_device = binding.interface_name.as_deref().unwrap_or("default"),
+        local_ip = binding
+            .local_ip
             .map(|ip| ip.to_string())
             .as_deref()
             .unwrap_or("default"),

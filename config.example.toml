@@ -1,0 +1,32 @@
+[network]
+gateway = "10.184.6.32"
+test_url = "http://1.1.1.1"
+login_url = "http://10.184.6.32/portal-conversion/api/v3/portal/connect"
+timeout_secs = 5
+
+[default_account]
+username = "3124351080@xjtu"
+password = "change-me"
+
+[logout]
+enabled = true
+known_macs = [
+  "11:22:33:44:55:66",
+  "aa:bb:cc:dd:ee:ff",
+]
+
+[[accounts]]
+id = "main"
+username = "3124351080@xjtu"
+password = "change-me"
+
+[[interfaces]]
+id = "wan1"
+name = "eth0"
+# local_ip = "10.180.0.10"
+mac = "11:22:33:44:55:66"
+
+[[targets]]
+id = "wan1-main"
+account = "main"
+interface = "wan1"

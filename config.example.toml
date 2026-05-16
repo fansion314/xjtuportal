@@ -2,6 +2,8 @@
 gateway = "10.184.6.32"
 test_url = "http://1.1.1.1"
 login_url = "http://10.184.6.32/portal-conversion/api/v3/portal/connect"
+session_list_url = "http://10.184.6.32/portal-conversion/api/v3/session/list"
+session_logout_url = "http://10.184.6.32/portal-conversion/api/v3/session/acctUniqueId"
 timeout_secs = 5
 
 [default_account]

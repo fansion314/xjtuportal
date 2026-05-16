@@ -5,7 +5,7 @@ use std::sync::{
 
 use wiremock::{
     Mock, MockServer, Request, Respond, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{body_string, method, path},
 };
 use xjtuportal::{
     RunStatus,
@@ -40,39 +40,48 @@ async fn automatic_logout_then_retry_succeeds() {
         .await;
 
     Mock::given(method("POST"))
-        .and(path("/portal/api/v2/online"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "token": "session-token"
-        })))
-        .expect(2)
-        .mount(&server)
-        .await;
-
-    Mock::given(method("GET"))
-        .and(path("/portal/api/v2/session/list"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "concurrency": "3",
-            "sessions": [
-                {
-                    "framed_ip_address": "10.180.0.2",
-                    "calling_station_id": "00:00:5e:00:53:01",
-                    "acct_start_time": "2026-05-15 12:00:00",
-                    "acct_unique_id": "logout-me"
-                },
-                {
-                    "framed_ip_address": "10.180.0.3",
-                    "calling_station_id": "11:22:33:44:55:66",
-                    "acct_start_time": "2026-05-15 12:01:00",
-                    "acct_unique_id": "keep-me"
-                }
-            ]
-        })))
+        .and(path("/portal-conversion/api/v3/session/list"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(
+                encrypt_text(
+                    &serde_json::json!({
+                        "concurrency": "3",
+                        "sessions": [
+                            {
+                                "framed_ip_address": "10.180.0.2",
+                                "calling_station_id": "00-00-5e-00-53-01",
+                                "acct_start_time": "2026-05-15 12:00:00",
+                                "acct_unique_id": "logout-me"
+                            },
+                            {
+                                "framed_ip_address": "10.180.0.3",
+                                "calling_station_id": "11:22:33:44:55:66",
+                                "acct_start_time": "2026-05-15 12:01:00",
+                                "acct_unique_id": "keep-me"
+                            }
+                        ]
+                    })
+                    .to_string(),
+                )
+                .unwrap(),
+            ),
+        )
         .expect(1)
         .mount(&server)
         .await;
 
-    Mock::given(method("DELETE"))
-        .and(path("/portal/api/v2/session/acctUniqueId/logout-me"))
+    Mock::given(method("POST"))
+        .and(path("/portal-conversion/api/v3/session/acctUniqueId"))
+        .and(body_string(
+            encrypt_text(
+                &serde_json::json!({
+                    "acctUniqueId": "logout-me",
+                    "mac": "00-00-5e-00-53-01"
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        ))
         .respond_with(ResponseTemplate::new(200))
         .expect(1)
         .mount(&server)
@@ -83,6 +92,11 @@ async fn automatic_logout_then_retry_succeeds() {
             gateway: server.uri(),
             test_url: format!("{}/probe", server.uri()),
             login_url: format!("{}/portal-conversion/api/v3/portal/connect", server.uri()),
+            session_list_url: format!("{}/portal-conversion/api/v3/session/list", server.uri()),
+            session_logout_url: format!(
+                "{}/portal-conversion/api/v3/session/acctUniqueId",
+                server.uri()
+            ),
             timeout_secs: 5,
         },
         default_account: Some(AccountConfig {
@@ -121,6 +135,11 @@ async fn already_online_does_not_login() {
             gateway: server.uri(),
             test_url: format!("{}/probe", server.uri()),
             login_url: format!("{}/portal-conversion/api/v3/portal/connect", server.uri()),
+            session_list_url: format!("{}/portal-conversion/api/v3/session/list", server.uri()),
+            session_logout_url: format!(
+                "{}/portal-conversion/api/v3/session/acctUniqueId",
+                server.uri()
+            ),
             timeout_secs: 5,
         },
         default_account: Some(AccountConfig {
@@ -148,7 +167,7 @@ impl Respond for SequentialLogin {
     fn respond(&self, _request: &Request) -> ResponseTemplate {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         let json = if call == 0 {
-            r#"{"error":81,"errorDescription":"already have 3 sessions"}"#
+            r#"{"error":81,"errorDescription":"already have 3 sessions","token":"session-token"}"#
         } else {
             r#"{"code":0,"token":"abcdef123456"}"#
         };
@@ -172,6 +191,11 @@ async fn multi_target_continues_after_one_target_fails() {
             gateway: server.uri(),
             test_url: format!("{}/probe", server.uri()),
             login_url: format!("{}/portal-conversion/api/v3/portal/connect", server.uri()),
+            session_list_url: format!("{}/portal-conversion/api/v3/session/list", server.uri()),
+            session_logout_url: format!(
+                "{}/portal-conversion/api/v3/session/acctUniqueId",
+                server.uri()
+            ),
             timeout_secs: 5,
         },
         default_account: None,

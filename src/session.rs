@@ -6,6 +6,7 @@ use crate::error::{PortalError, Result};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub mac: String,
+    pub api_mac: String,
     pub user_ip: String,
     pub start_time: String,
     pub unique_id: String,
@@ -25,11 +26,10 @@ impl SessionListResponse {
         let mut sessions = Vec::new();
 
         for session in self.sessions {
-            let Some(mac) = session
-                .calling_station_id
-                .as_deref()
-                .and_then(|mac| normalize_mac(mac).ok())
-            else {
+            let Some(api_mac) = session.calling_station_id.filter(|value| !value.is_empty()) else {
+                continue;
+            };
+            let Ok(mac) = normalize_mac(&api_mac) else {
                 continue;
             };
             if !seen.insert(mac.clone()) {
@@ -44,6 +44,7 @@ impl SessionListResponse {
             }
             sessions.push(Session {
                 mac,
+                api_mac,
                 user_ip,
                 start_time: session.acct_start_time.unwrap_or_default(),
                 unique_id,

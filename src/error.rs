@@ -39,6 +39,8 @@ pub enum PortalError {
     Decrypt,
     #[error("AES encrypt failed")]
     Encrypt,
+    #[error("invalid HTTP header value: {0}")]
+    InvalidHeaderValue(String),
     #[error("interface {name} has no usable IPv4 address")]
     InterfaceAddressMissing { name: String },
     #[error("failed to inspect local interfaces: {0}")]
@@ -55,7 +57,7 @@ pub enum PortalError {
     NoLogoutCandidate,
     #[error("still overloaded after automatic logout: {0}")]
     StillOverloaded(String),
-    #[error("session token response did not include a token")]
+    #[error("login response did not include the token required by session APIs")]
     MissingToken,
     #[error("invalid MAC address {0}")]
     InvalidMac(String),

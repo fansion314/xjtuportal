@@ -70,12 +70,13 @@ async fn login_with_optional_logout(
             info!(target = %target.id, token = %token_preview.unwrap_or_default(), "login success");
             Ok(())
         }
-        LoginStatus::Overloaded { description } => {
+        LoginStatus::Overloaded { description, token } => {
             warn!(target = %target.id, description = %description, "device limit reached");
             if !config.logout.enabled {
                 return Err(PortalError::DeviceLimitReached);
             }
-            logout_one_and_retry(config, target, client, redirect_url).await
+            let token = token.ok_or(PortalError::MissingToken)?;
+            logout_one_and_retry(config, target, client, redirect_url, &token).await
         }
         LoginStatus::Failed {
             code,
@@ -94,8 +95,9 @@ async fn logout_one_and_retry(
     target: &ResolvedTarget,
     client: &CampusClient,
     redirect_url: &str,
+    token: &str,
 ) -> Result<()> {
-    let sessions = client.list_sessions(&target.account).await?;
+    let sessions = client.list_sessions(token).await?;
     let session_macs = sessions
         .iter()
         .map(|session| session.mac.as_str())
@@ -109,7 +111,7 @@ async fn logout_one_and_retry(
 
     info!(target = %target.id, mac = %session.mac, "logging out existing session");
     client
-        .logout_session(&target.account, &session.unique_id)
+        .logout_session(token, &session.unique_id, &session.api_mac)
         .await?;
 
     match client.login(&target.account, redirect_url).await? {
@@ -121,7 +123,9 @@ async fn logout_one_and_retry(
             );
             Ok(())
         }
-        LoginStatus::Overloaded { description } => Err(PortalError::StillOverloaded(description)),
+        LoginStatus::Overloaded { description, .. } => {
+            Err(PortalError::StillOverloaded(description))
+        }
         LoginStatus::Failed {
             code,
             error,

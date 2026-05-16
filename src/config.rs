@@ -128,6 +128,10 @@ pub struct NetworkConfig {
     pub test_url: String,
     #[serde(default = "default_login_url")]
     pub login_url: String,
+    #[serde(default = "default_session_list_url")]
+    pub session_list_url: String,
+    #[serde(default = "default_session_logout_url")]
+    pub session_logout_url: String,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 }
@@ -152,6 +156,8 @@ impl Default for NetworkConfig {
             gateway: default_gateway(),
             test_url: default_test_url(),
             login_url: default_login_url(),
+            session_list_url: default_session_list_url(),
+            session_logout_url: default_session_logout_url(),
             timeout_secs: default_timeout_secs(),
         }
     }
@@ -167,6 +173,14 @@ fn default_test_url() -> String {
 
 fn default_login_url() -> String {
     "http://10.184.6.32/portal-conversion/api/v3/portal/connect".to_string()
+}
+
+fn default_session_list_url() -> String {
+    "http://10.184.6.32/portal-conversion/api/v3/session/list".to_string()
+}
+
+fn default_session_logout_url() -> String {
+    "http://10.184.6.32/portal-conversion/api/v3/session/acctUniqueId".to_string()
 }
 
 fn default_timeout_secs() -> u64 {

@@ -1,6 +1,9 @@
 use reqwest::{
     Client, StatusCode,
-    header::{ACCEPT_LANGUAGE, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT},
+    header::{
+        ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HeaderMap,
+        HeaderValue, ORIGIN, PRAGMA, REFERER, USER_AGENT,
+    },
     redirect::Policy,
 };
 use serde::{Deserialize, Serialize};
@@ -113,38 +116,32 @@ impl CampusClient {
         Ok(classify_login_response(response))
     }
 
-    pub async fn list_sessions(&self, account: &AccountConfig) -> Result<Vec<Session>> {
-        let token = self.auth_token(account).await?;
+    pub async fn list_sessions(&self, token: &str) -> Result<Vec<Session>> {
         let response = self
             .http
-            .get(format!(
-                "{}/portal/api/v2/session/list",
-                self.network.gateway_base()
-            ))
-            .header("Authorization", &token)
-            .header("Cookie", format!("token={token}"))
+            .post(&self.network.session_list_url)
+            .headers(self.session_headers(token)?)
+            .body(Vec::new())
             .send()
             .await
             .map_err(PortalError::Request)?
             .error_for_status()
             .map_err(PortalError::Request)?;
-        let response = response
-            .json::<SessionListResponse>()
-            .await
-            .map_err(PortalError::Request)?;
+        let encrypted = response.text().await.map_err(PortalError::Request)?;
+        let response = decrypt_json::<SessionListResponse>(&encrypted)?;
         Ok(response.into_sessions())
     }
 
-    pub async fn logout_session(&self, account: &AccountConfig, unique_id: &str) -> Result<()> {
-        let token = self.auth_token(account).await?;
+    pub async fn logout_session(&self, token: &str, unique_id: &str, mac: &str) -> Result<()> {
+        let request = LogoutRequest {
+            acct_unique_id: unique_id,
+            mac,
+        };
+        let body = encrypt_json(&request)?;
         self.http
-            .delete(format!(
-                "{}/portal/api/v2/session/acctUniqueId/{}",
-                self.network.gateway_base(),
-                unique_id
-            ))
-            .header("Authorization", &token)
-            .header("Cookie", format!("token={token}"))
+            .post(&self.network.session_logout_url)
+            .headers(self.session_headers(token)?)
+            .body(body)
             .send()
             .await
             .map_err(PortalError::Request)?
@@ -153,38 +150,32 @@ impl CampusClient {
         Ok(())
     }
 
-    async fn auth_token(&self, account: &AccountConfig) -> Result<String> {
-        let redirect_url = fake_redirect_url(&self.network);
-        let request = TokenRequest {
-            device_type: "PC",
-            redirect_url: &redirect_url,
-            data_type: "login",
-            web_auth_user: &account.username,
-            web_auth_password: &account.password,
-        };
-
-        let response = self
-            .http
-            .post(format!(
-                "{}/portal/api/v2/online",
-                self.network.gateway_base()
-            ))
-            .header(CONTENT_TYPE, "application/json")
-            .header("Cookie", format!("redirectUrl={redirect_url}"))
-            .json(&request)
-            .send()
-            .await
-            .map_err(PortalError::Request)?
-            .error_for_status()
-            .map_err(PortalError::Request)?;
-        let response = response
-            .json::<TokenResponse>()
-            .await
-            .map_err(PortalError::Request)?;
-        response
-            .token
-            .filter(|token| !token.is_empty())
-            .ok_or(PortalError::MissingToken)
+    fn session_headers(&self, token: &str) -> Result<HeaderMap> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, text/plain, */*"),
+        );
+        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("zh-CN,zh;q=0.9"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(token)
+                .map_err(|err| PortalError::InvalidHeaderValue(err.to_string()))?,
+        );
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            ORIGIN,
+            HeaderValue::from_str(&self.network.gateway_base())
+                .map_err(|err| PortalError::InvalidHeaderValue(err.to_string()))?,
+        );
+        headers.insert(PRAGMA, HeaderValue::from_static("no-cache"));
+        headers.insert(
+            REFERER,
+            HeaderValue::from_str(&format!("{}/wenet/auth", self.network.gateway_base()))
+                .map_err(|err| PortalError::InvalidHeaderValue(err.to_string()))?,
+        );
+        Ok(headers)
     }
 }
 
@@ -236,6 +227,7 @@ pub enum LoginStatus {
     },
     Overloaded {
         description: String,
+        token: Option<String>,
     },
     Failed {
         code: Option<i64>,
@@ -269,22 +261,10 @@ pub struct LoginResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct TokenRequest<'a> {
-    #[serde(rename = "deviceType")]
-    device_type: &'a str,
-    #[serde(rename = "redirectUrl")]
-    redirect_url: &'a str,
-    #[serde(rename = "type")]
-    data_type: &'a str,
-    #[serde(rename = "webAuthUser")]
-    web_auth_user: &'a str,
-    #[serde(rename = "webAuthPassword")]
-    web_auth_password: &'a str,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    token: Option<String>,
+struct LogoutRequest<'a> {
+    #[serde(rename = "acctUniqueId")]
+    acct_unique_id: &'a str,
+    mac: &'a str,
 }
 
 pub fn classify_login_response(response: LoginResponse) -> LoginStatus {
@@ -301,7 +281,10 @@ pub fn classify_login_response(response: LoginResponse) -> LoginStatus {
         || (response.error == Some(81) && lower_description.contains("already have"))
         || lower_description.contains("already have")
     {
-        return LoginStatus::Overloaded { description };
+        return LoginStatus::Overloaded {
+            description,
+            token: response.token,
+        };
     }
 
     LoginStatus::Failed {
@@ -320,13 +303,6 @@ pub fn fix_redirect_url(raw_url: &str) -> Result<String> {
         parsed.set_path("/");
     }
     Ok(parsed.to_string())
-}
-
-fn fake_redirect_url(network: &NetworkConfig) -> String {
-    format!(
-        "{}/?userip=10.180.0.1&nasip=10.6.0.1&usermac=00:11:22:33:44:55",
-        network.gateway_base()
-    )
 }
 
 fn is_redirect(status: StatusCode) -> bool {
@@ -371,13 +347,14 @@ mod tests {
             code: None,
             error: Some(81),
             error_description: Some("already have 3 sessions".to_string()),
-            token: None,
+            token: Some("session-token".to_string()),
         });
 
         assert_eq!(
             status,
             LoginStatus::Overloaded {
-                description: "already have 3 sessions".to_string()
+                description: "already have 3 sessions".to_string(),
+                token: Some("session-token".to_string())
             }
         );
     }

@@ -16,12 +16,27 @@ pub enum PortalError {
         path: String,
         source: toml::de::Error,
     },
+    #[error("failed to edit config {path}: {source}")]
+    ConfigEdit {
+        path: String,
+        source: toml_edit::TomlError,
+    },
+    #[error("failed to write config {path}: {source}")]
+    ConfigWrite {
+        path: String,
+        source: std::io::Error,
+    },
     #[error("invalid config: {0}")]
     InvalidConfig(String),
     #[error("failed to build HTTP client: {0}")]
     HttpClient(#[from] reqwest::Error),
     #[error("HTTP request failed: {0}")]
     Request(reqwest::Error),
+    #[error("portal returned HTTP status {status}: {body}")]
+    PortalHttpStatus {
+        status: reqwest::StatusCode,
+        body: String,
+    },
     #[error("portal response is missing Location header")]
     MissingRedirect,
     #[error("portal returned unsupported network status {0}")]
@@ -63,4 +78,12 @@ pub enum PortalError {
     InvalidMac(String),
     #[error("invalid local IP address {0}")]
     InvalidLocalIp(IpAddr),
+    #[error("failed to resolve gateway address {0}")]
+    GatewayResolve(String),
+    #[error("could not identify the current device session by local IP {0}")]
+    CurrentSessionNotFound(String),
+    #[error("no session matches {0}")]
+    SessionNotFound(String),
+    #[error("multiple sessions match name {0}")]
+    AmbiguousSessionName(String),
 }

@@ -15,7 +15,6 @@ use crate::{
     error::{PortalError, Result},
     log_network_binding,
     session::{Session, SessionListResponse},
-    token_preview,
 };
 
 #[derive(Clone)]
@@ -107,10 +106,18 @@ impl CampusClient {
             .body(body)
             .send()
             .await
-            .map_err(PortalError::Request)?
-            .error_for_status()
             .map_err(PortalError::Request)?;
+        let status = response.status();
         let encrypted = response.text().await.map_err(PortalError::Request)?;
+        if !status.is_success() {
+            if let Ok(response) = decrypt_json::<LoginResponse>(&encrypted) {
+                return Ok(classify_login_response(response));
+            }
+            return Err(PortalError::PortalHttpStatus {
+                status,
+                body: encrypted,
+            });
+        }
         let response = decrypt_json::<LoginResponse>(&encrypted)?;
 
         Ok(classify_login_response(response))
@@ -223,7 +230,7 @@ pub enum NetworkStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginStatus {
     Success {
-        token_preview: Option<String>,
+        token: Option<String>,
     },
     Overloaded {
         description: String,
@@ -270,7 +277,7 @@ struct LogoutRequest<'a> {
 pub fn classify_login_response(response: LoginResponse) -> LoginStatus {
     if response.code == Some(0) || response.error == Some(0) {
         return LoginStatus::Success {
-            token_preview: token_preview(response.token.as_deref()),
+            token: response.token,
         };
     }
 
@@ -336,7 +343,7 @@ mod tests {
         assert_eq!(
             status,
             LoginStatus::Success {
-                token_preview: Some("1234567890".to_string())
+                token: Some("1234567890abcdef".to_string()),
             }
         );
     }

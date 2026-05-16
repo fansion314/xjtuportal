@@ -7,6 +7,7 @@ use crate::error::{PortalError, Result};
 pub struct Session {
     pub mac: String,
     pub api_mac: String,
+    pub device_type: String,
     pub user_ip: String,
     pub start_time: String,
     pub unique_id: String,
@@ -45,6 +46,7 @@ impl SessionListResponse {
             sessions.push(Session {
                 mac,
                 api_mac,
+                device_type: session.device_type.unwrap_or_default(),
                 user_ip,
                 start_time: session.acct_start_time.unwrap_or_default(),
                 unique_id,
@@ -57,6 +59,8 @@ impl SessionListResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct PortalSession {
+    #[serde(default, rename = "deviceType")]
+    pub device_type: Option<String>,
     #[serde(default)]
     pub framed_ip_address: Option<String>,
     #[serde(default)]
@@ -67,7 +71,10 @@ pub struct PortalSession {
     pub acct_unique_id: Option<String>,
 }
 
-pub fn choose_logout_mac(session_macs: &[&str], known_macs: &[String]) -> Option<String> {
+pub fn choose_logout_mac<K>(session_macs: &[&str], known_macs: &[K]) -> Option<String>
+where
+    K: AsRef<str>,
+{
     if session_macs.is_empty() {
         return None;
     }
@@ -88,7 +95,7 @@ pub fn choose_logout_mac(session_macs: &[&str], known_macs: &[String]) -> Option
 
     let known_order = known_macs
         .iter()
-        .filter_map(|mac| normalize_mac(mac).ok())
+        .filter_map(|mac| normalize_mac(mac.as_ref()).ok())
         .collect::<Vec<_>>();
     let known_set = known_order.iter().cloned().collect::<HashSet<_>>();
 
@@ -174,6 +181,6 @@ mod tests {
 
     #[test]
     fn returns_none_for_empty_sessions() {
-        assert_eq!(choose_logout_mac(&[], &[]), None);
+        assert_eq!(choose_logout_mac(&[], &Vec::<String>::new()), None);
     }
 }

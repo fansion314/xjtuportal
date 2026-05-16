@@ -49,17 +49,7 @@ impl AppConfig {
 
     pub fn resolved_targets(&self) -> Result<Vec<ResolvedTarget>> {
         if self.targets.is_empty() {
-            let account = self.default_account.clone().ok_or_else(|| {
-                PortalError::InvalidConfig(
-                    "[default_account] is required when [[targets]] is not configured".to_string(),
-                )
-            })?;
-            validate_account(&account)?;
-            return Ok(vec![ResolvedTarget {
-                id: "default".to_string(),
-                account,
-                interface: None,
-            }]);
+            return Ok(vec![self.default_target()?]);
         }
 
         let accounts = self
@@ -104,6 +94,61 @@ impl AppConfig {
             })
             .collect()
     }
+
+    pub fn default_target(&self) -> Result<ResolvedTarget> {
+        let account = self.default_account.clone().ok_or_else(|| {
+            PortalError::InvalidConfig("[default_account] is required".to_string())
+        })?;
+        validate_account(&account)?;
+        Ok(ResolvedTarget {
+            id: "default".to_string(),
+            account,
+            interface: None,
+        })
+    }
+}
+
+pub fn write_network_nas_ip(path: impl AsRef<Path>, nas_ip: &str) -> Result<bool> {
+    let path = path.as_ref();
+    let text = fs::read_to_string(path).map_err(|source| PortalError::ConfigRead {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut document =
+        text.parse::<toml_edit::DocumentMut>()
+            .map_err(|source| PortalError::ConfigEdit {
+                path: path.display().to_string(),
+                source,
+            })?;
+
+    if !document.as_table().contains_key("network") {
+        document["network"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    let network = document["network"]
+        .as_table_mut()
+        .ok_or_else(|| PortalError::InvalidConfig("[network] must be a TOML table".to_string()))?;
+    if network.get("nas_ip").and_then(toml_edit::Item::as_str) == Some(nas_ip) {
+        return Ok(false);
+    }
+
+    if let Some(item) = network.get_mut("nas_ip") {
+        if let Some(value) = item.as_value_mut() {
+            let decor = value.decor().clone();
+            let mut new_value = toml_edit::Value::from(nas_ip);
+            *new_value.decor_mut() = decor;
+            *value = new_value;
+        } else {
+            *item = toml_edit::value(nas_ip);
+        }
+    } else {
+        network.insert("nas_ip", toml_edit::value(nas_ip));
+    }
+    fs::write(path, document.to_string()).map_err(|source| PortalError::ConfigWrite {
+        path: path.display().to_string(),
+        source,
+    })?;
+    Ok(true)
 }
 
 fn validate_account(account: &AccountConfig) -> Result<()> {
@@ -124,10 +169,14 @@ fn validate_account(account: &AccountConfig) -> Result<()> {
 pub struct NetworkConfig {
     #[serde(default = "default_gateway")]
     pub gateway: String,
+    #[serde(default)]
+    pub nas_ip: Option<String>,
     #[serde(default = "default_test_url")]
     pub test_url: String,
     #[serde(default = "default_login_url")]
     pub login_url: String,
+    #[serde(default = "default_session_login_redirect_url")]
+    pub session_login_redirect_url: String,
     #[serde(default = "default_session_list_url")]
     pub session_list_url: String,
     #[serde(default = "default_session_logout_url")]
@@ -154,8 +203,10 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             gateway: default_gateway(),
+            nas_ip: None,
             test_url: default_test_url(),
             login_url: default_login_url(),
+            session_login_redirect_url: default_session_login_redirect_url(),
             session_list_url: default_session_list_url(),
             session_logout_url: default_session_logout_url(),
             timeout_secs: default_timeout_secs(),
@@ -173,6 +224,11 @@ fn default_test_url() -> String {
 
 fn default_login_url() -> String {
     "http://10.184.6.32/portal-conversion/api/v3/portal/connect".to_string()
+}
+
+fn default_session_login_redirect_url() -> String {
+    "http://10.184.6.32:80/wenet/auth?userip={local_ip}&usermac={local_mac}&nasip={nas_ip}&"
+        .to_string()
 }
 
 fn default_session_list_url() -> String {
@@ -199,7 +255,49 @@ pub struct LogoutConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
-    pub known_macs: Vec<String>,
+    pub current_mac: Option<String>,
+    #[serde(default)]
+    pub known_macs: Vec<KnownMacConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownMacConfig {
+    pub mac: String,
+    pub name: Option<String>,
+}
+
+impl KnownMacConfig {
+    pub fn new(mac: impl Into<String>, name: Option<String>) -> Self {
+        Self {
+            mac: mac.into(),
+            name,
+        }
+    }
+}
+
+impl AsRef<str> for KnownMacConfig {
+    fn as_ref(&self) -> &str {
+        &self.mac
+    }
+}
+
+impl<'de> Deserialize<'de> for KnownMacConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum KnownMacValue {
+            Mac(String),
+            Named { mac: String, name: Option<String> },
+        }
+
+        match KnownMacValue::deserialize(deserializer)? {
+            KnownMacValue::Mac(mac) => Ok(Self::new(mac, None)),
+            KnownMacValue::Named { mac, name } => Ok(Self::new(mac, name)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -343,5 +441,78 @@ mod tests {
         .unwrap();
 
         assert!(config.resolved_targets().is_err());
+    }
+
+    #[test]
+    fn parses_named_known_macs() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [logout]
+            known_macs = [
+              "11:22:33:44:55:66",
+              { mac = "aa:bb:cc:dd:ee:ff", name = "phone" },
+            ]
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.logout.known_macs,
+            vec![
+                KnownMacConfig::new("11:22:33:44:55:66", None),
+                KnownMacConfig::new("aa:bb:cc:dd:ee:ff", Some("phone".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn writes_network_nas_ip() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(
+            file.path(),
+            r#"
+            [network]
+            gateway = "10.184.6.32"
+
+            [default_account]
+            username = "u@xjtu"
+            password = "p"
+            "#,
+        )
+        .unwrap();
+
+        assert!(write_network_nas_ip(file.path(), "10.6.33.10").unwrap());
+        assert!(!write_network_nas_ip(file.path(), "10.6.33.10").unwrap());
+
+        let config = AppConfig::read(file.path()).unwrap();
+        assert_eq!(config.network.nas_ip.as_deref(), Some("10.6.33.10"));
+    }
+
+    #[test]
+    fn updates_network_nas_ip_without_removing_comments() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(
+            file.path(),
+            r#"# root comment
+[network] # network comment
+gateway = "10.184.6.32" # gateway comment
+nas_ip = "10.0.0.1" # nas comment
+
+# account comment
+[default_account]
+username = "u@xjtu"
+password = "p"
+"#,
+        )
+        .unwrap();
+
+        assert!(write_network_nas_ip(file.path(), "10.6.33.10").unwrap());
+
+        let updated = fs::read_to_string(file.path()).unwrap();
+        assert!(updated.contains("# root comment"));
+        assert!(updated.contains("[network] # network comment"));
+        assert!(updated.contains("gateway = \"10.184.6.32\" # gateway comment"));
+        assert!(updated.contains("nas_ip = \"10.6.33.10\" # nas comment"));
+        assert!(updated.contains("# account comment"));
     }
 }

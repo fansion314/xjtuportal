@@ -1,7 +1,11 @@
 [network]
 gateway = "10.184.6.32"
+# NAS/access-controller IP from the unauthenticated captive redirect Location.
+# Example: http://10.184.6.32:80?userip=...&nasip=10.6.33.10&usermac=...
+nas_ip = "10.6.33.10"
 test_url = "http://1.1.1.1"
 login_url = "http://10.184.6.32/portal-conversion/api/v3/portal/connect"
+session_login_redirect_url = "http://10.184.6.32:80/wenet/auth?userip={local_ip}&usermac={local_mac}&nasip={nas_ip}"
 session_list_url = "http://10.184.6.32/portal-conversion/api/v3/session/list"
 session_logout_url = "http://10.184.6.32/portal-conversion/api/v3/session/acctUniqueId"
 timeout_secs = 5
@@ -12,9 +16,14 @@ password = "change-me"
 
 [logout]
 enabled = true
+# Optional: set this when `xjtuportal logout` should always mean this device.
+# This is especially useful when the CLI runs behind a router/NAT and the portal
+# sees the router WAN MAC instead of the host running the command.
+# current_mac = "11:22:33:44:55:66"
 known_macs = [
-  "11:22:33:44:55:66",
-  "aa:bb:cc:dd:ee:ff",
+  { mac = "11:22:33:44:55:66", name = "router" },
+  { mac = "aa:bb:cc:dd:ee:ff", name = "phone" },
+  "00:00:5e:00:53:01",
 ]
 
 [[accounts]]

@@ -23,7 +23,7 @@ timeout_secs = 5
 
 [default_account]
 # login/list/logout 子命令使用的默认账号。
-username = "3124351080@xjtu"
+username = "3124000000@xjtu"
 # 默认账号密码。
 password = "change-me"
 
@@ -43,7 +43,7 @@ known_macs = [
 # 账号 ID，仅在 targets 里引用，不会发送给校园网。
 id = "main"
 # 校园网账号。
-username = "3124351080@xjtu"
+username = "3124000000@xjtu"
 # 校园网密码。
 password = "change-me"
 

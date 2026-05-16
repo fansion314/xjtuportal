@@ -8,7 +8,15 @@ use xjtuportal::{
     logout_default_session, run, run_default_login,
 };
 
-const HELP_TEMPLATE: &str = "\
+const ROOT_HELP_TEMPLATE: &str = "\
+西安交大校园网自动登录工具
+
+用法: {usage}
+不输入任何子命令时，会直接执行全自动登录流程；也可以使用 login/list/logout 管理当前默认账号的登录设备。
+
+{all-args}{after-help}";
+
+const COMMAND_HELP_TEMPLATE: &str = "\
 {about-with-newline}
 用法: {usage}
 
@@ -23,12 +31,12 @@ const HELP_TEMPLATE: &str = "\
     disable_help_subcommand = true,
     disable_version_flag = true,
     propagate_version = true,
-    help_template = HELP_TEMPLATE,
+    help_template = ROOT_HELP_TEMPLATE,
     next_help_heading = "选项",
     subcommand_help_heading = "命令"
 )]
 struct Args {
-    #[arg(short, long, value_name = "文件", global = true, help = "配置文件路径")]
+    #[arg(short, long, value_name = "FILE", global = true, help = "配置文件路径")]
     config: Option<PathBuf>,
     #[arg(
         long,
@@ -60,20 +68,20 @@ struct Args {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// 使用 [default_account] 执行单账号登录。
-    #[command(help_template = HELP_TEMPLATE)]
+    #[command(help_template = COMMAND_HELP_TEMPLATE)]
     Login,
     /// 列出 [default_account] 当前已经登录的设备。
-    #[command(help_template = HELP_TEMPLATE)]
+    #[command(help_template = COMMAND_HELP_TEMPLATE)]
     List,
     /// 下线当前设备，或下线指定 MAC/名称对应的设备。
-    #[command(help_template = HELP_TEMPLATE)]
+    #[command(help_template = COMMAND_HELP_TEMPLATE)]
     Logout {
         /// MAC 地址，或 logout.known_macs 中配置的名称。
         #[arg(help_heading = "参数")]
         selector: Option<String>,
     },
     /// 生成 shell 自动补全脚本。
-    #[command(help_template = HELP_TEMPLATE)]
+    #[command(help_template = COMMAND_HELP_TEMPLATE)]
     Completions {
         #[arg(
             value_enum,
@@ -159,26 +167,70 @@ async fn main() -> ExitCode {
 
 fn default_config_path() -> std::io::Result<PathBuf> {
     let executable = std::env::current_exe()?;
-    Ok(executable
+    let executable_config = executable
         .parent()
-        .map(|directory| directory.join("config.toml"))
-        .unwrap_or_else(|| PathBuf::from("config.toml")))
+        .map(|directory| directory.join("config.toml"));
+    if let Some(path) = executable_config
+        && path.try_exists()?
+    {
+        return Ok(path);
+    }
+
+    let current_config = std::env::current_dir()?.join("config.toml");
+    if current_config.try_exists()? {
+        return Ok(current_config);
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "程序同目录和当前执行目录都没有 config.toml",
+    ))
 }
 
 fn print_sessions(sessions: &[NamedSession]) {
     println!(
-        "{:<12}  {:<17}  {:<15}  {:<8}  登录时间",
-        "名称", "MAC", "IP", "设备"
+        "{}  {}  {}  {}  登录时间",
+        pad_display("名称", 10),
+        pad_display("MAC", 18),
+        pad_display("IP", 14),
+        pad_display("设备", 7),
     );
     for session in sessions {
         println!(
-            "{:<18}  {:<17}  {:<15}  {:<8}  {}",
-            display_name(&session.name),
-            session.mac,
-            display_value(&session.user_ip),
-            display_value(&session.device_type),
+            "{}  {}  {}  {}  {}",
+            pad_display(display_name(&session.name), 10),
+            pad_display(&session.mac, 18),
+            pad_display(display_value(&session.user_ip), 14),
+            pad_display(display_value(&session.device_type), 7),
             display_value(&session.start_time),
         );
+    }
+}
+
+fn pad_display(value: &str, width: usize) -> String {
+    let display_width = terminal_display_width(value);
+    let padding = width.saturating_sub(display_width);
+    format!("{value}{}", " ".repeat(padding))
+}
+
+fn terminal_display_width(value: &str) -> usize {
+    value.chars().map(char_display_width).sum()
+}
+
+fn char_display_width(value: char) -> usize {
+    match value {
+        '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}' => 0,
+        '\u{1100}'..='\u{115f}'
+        | '\u{2329}'..='\u{232a}'
+        | '\u{2e80}'..='\u{a4cf}'
+        | '\u{ac00}'..='\u{d7a3}'
+        | '\u{f900}'..='\u{faff}'
+        | '\u{fe10}'..='\u{fe19}'
+        | '\u{fe30}'..='\u{fe6f}'
+        | '\u{ff00}'..='\u{ff60}'
+        | '\u{ffe0}'..='\u{ffe6}'
+        | '\u{20000}'..='\u{3fffd}' => 2,
+        _ => 1,
     }
 }
 

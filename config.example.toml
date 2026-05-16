@@ -3,7 +3,7 @@
 
 [default_account]
 # 校园网账号。一般是学号加运营商后缀，例如 3124351080@xjtu。
-username = "3124351080@xjtu"
+username = "3124000000@xjtu"
 # 校园网密码。
 password = "change-me"
 

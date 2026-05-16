@@ -108,12 +108,14 @@ impl AppConfig {
     }
 }
 
-pub fn write_network_nas_ip(path: impl AsRef<Path>, nas_ip: &str) -> Result<bool> {
+pub async fn write_network_nas_ip(path: impl AsRef<Path>, nas_ip: &str) -> Result<bool> {
     let path = path.as_ref();
-    let text = fs::read_to_string(path).map_err(|source| PortalError::ConfigRead {
-        path: path.display().to_string(),
-        source,
-    })?;
+    let text = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|source| PortalError::ConfigRead {
+            path: path.display().to_string(),
+            source,
+        })?;
     let mut document =
         text.parse::<toml_edit::DocumentMut>()
             .map_err(|source| PortalError::ConfigEdit {
@@ -144,10 +146,12 @@ pub fn write_network_nas_ip(path: impl AsRef<Path>, nas_ip: &str) -> Result<bool
     } else {
         network.insert("nas_ip", toml_edit::value(nas_ip));
     }
-    fs::write(path, document.to_string()).map_err(|source| PortalError::ConfigWrite {
-        path: path.display().to_string(),
-        source,
-    })?;
+    tokio::fs::write(path, document.to_string())
+        .await
+        .map_err(|source| PortalError::ConfigWrite {
+            path: path.display().to_string(),
+            source,
+        })?;
     Ok(true)
 }
 
@@ -471,8 +475,8 @@ mod tests {
         toml::from_str::<AppConfig>(include_str!("../config.advanced.example.toml")).unwrap();
     }
 
-    #[test]
-    fn writes_network_nas_ip() {
+    #[tokio::test]
+    async fn writes_network_nas_ip() {
         let file = tempfile::NamedTempFile::new().unwrap();
         fs::write(
             file.path(),
@@ -487,15 +491,23 @@ mod tests {
         )
         .unwrap();
 
-        assert!(write_network_nas_ip(file.path(), "10.6.33.10").unwrap());
-        assert!(!write_network_nas_ip(file.path(), "10.6.33.10").unwrap());
+        assert!(
+            write_network_nas_ip(file.path(), "10.6.33.10")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !write_network_nas_ip(file.path(), "10.6.33.10")
+                .await
+                .unwrap()
+        );
 
         let config = AppConfig::read(file.path()).unwrap();
         assert_eq!(config.network.nas_ip.as_deref(), Some("10.6.33.10"));
     }
 
-    #[test]
-    fn updates_network_nas_ip_without_removing_comments() {
+    #[tokio::test]
+    async fn updates_network_nas_ip_without_removing_comments() {
         let file = tempfile::NamedTempFile::new().unwrap();
         fs::write(
             file.path(),
@@ -512,7 +524,11 @@ password = "p"
         )
         .unwrap();
 
-        assert!(write_network_nas_ip(file.path(), "10.6.33.10").unwrap());
+        assert!(
+            write_network_nas_ip(file.path(), "10.6.33.10")
+                .await
+                .unwrap()
+        );
 
         let updated = fs::read_to_string(file.path()).unwrap();
         assert!(updated.contains("# root comment"));

@@ -259,7 +259,7 @@ async fn session_client_for_target(
     target: &ResolvedTarget,
 ) -> Result<(CampusClient, String)> {
     let binding = target.network_binding()?;
-    info!(
+    debug!(
         target = %target.id,
         account = %target.account.username,
         interface = target.interface_label().as_deref().unwrap_or("default"),

@@ -232,7 +232,7 @@ async fn list_default_sessions_applies_known_names() {
     .unwrap();
 
     assert_eq!(sessions.len(), 2);
-    assert_eq!(sessions[0].name, "unknown");
+    assert_eq!(sessions[0].name, "未知");
     assert_eq!(sessions[1].name, "phone");
 }
 

@@ -68,7 +68,7 @@ impl AppConfig {
             .map(|target| {
                 let account = accounts.get(target.account.as_str()).ok_or_else(|| {
                     PortalError::InvalidConfig(format!(
-                        "target {} references unknown account {}",
+                        "target {} 引用了不存在的账号 {}",
                         target.id, target.account
                     ))
                 })?;
@@ -77,7 +77,7 @@ impl AppConfig {
                     Some(interface_id) => {
                         let interface = interfaces.get(interface_id.as_str()).ok_or_else(|| {
                             PortalError::InvalidConfig(format!(
-                                "target {} references unknown interface {}",
+                                "target {} 引用了不存在的网络接口 {}",
                                 target.id, interface_id
                             ))
                         })?;
@@ -97,7 +97,7 @@ impl AppConfig {
 
     pub fn default_target(&self) -> Result<ResolvedTarget> {
         let account = self.default_account.clone().ok_or_else(|| {
-            PortalError::InvalidConfig("[default_account] is required".to_string())
+            PortalError::InvalidConfig("缺少必需的 [default_account] 配置".to_string())
         })?;
         validate_account(&account)?;
         Ok(ResolvedTarget {
@@ -127,7 +127,7 @@ pub fn write_network_nas_ip(path: impl AsRef<Path>, nas_ip: &str) -> Result<bool
 
     let network = document["network"]
         .as_table_mut()
-        .ok_or_else(|| PortalError::InvalidConfig("[network] must be a TOML table".to_string()))?;
+        .ok_or_else(|| PortalError::InvalidConfig("[network] 必须是 TOML 表".to_string()))?;
     if network.get("nas_ip").and_then(toml_edit::Item::as_str) == Some(nas_ip) {
         return Ok(false);
     }
@@ -154,12 +154,12 @@ pub fn write_network_nas_ip(path: impl AsRef<Path>, nas_ip: &str) -> Result<bool
 fn validate_account(account: &AccountConfig) -> Result<()> {
     if account.username.trim().is_empty() {
         return Err(PortalError::InvalidConfig(
-            "account username cannot be empty".to_string(),
+            "账号 username 不能为空".to_string(),
         ));
     }
     if account.password.is_empty() {
         return Err(PortalError::InvalidConfig(
-            "account password cannot be empty".to_string(),
+            "账号 password 不能为空".to_string(),
         ));
     }
     Ok(())
@@ -463,6 +463,12 @@ mod tests {
                 KnownMacConfig::new("aa:bb:cc:dd:ee:ff", Some("phone".to_string())),
             ]
         );
+    }
+
+    #[test]
+    fn example_configs_parse() {
+        toml::from_str::<AppConfig>(include_str!("../config.example.toml")).unwrap();
+        toml::from_str::<AppConfig>(include_str!("../config.advanced.example.toml")).unwrap();
     }
 
     #[test]

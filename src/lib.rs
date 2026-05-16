@@ -47,7 +47,7 @@ pub async fn run(config: AppConfig, config_path: Option<PathBuf>) -> Result<RunS
             Ok(group_failed) => failed |= group_failed,
             Err(err) => {
                 failed = true;
-                error!(error = %err, "target group task failed");
+                error!(error = %err, "目标任务组执行失败");
             }
         }
     }
@@ -216,7 +216,7 @@ fn select_session_by_selector<'a>(
 fn named_session(config: &AppConfig, session: &Session) -> NamedSession {
     NamedSession {
         name: known_mac_name(config, &session.mac)
-            .unwrap_or("unknown")
+            .unwrap_or("未知")
             .to_string(),
         mac: session.mac.clone(),
         api_mac: session.api_mac.clone(),
@@ -245,7 +245,7 @@ fn session_login_redirect_url(config: &AppConfig) -> Result<String> {
     if needs_local_ip || needs_local_mac {
         let local_ip = local_ip_for_gateway(config)?.ok_or_else(|| {
             PortalError::InvalidConfig(
-                "network.session_login_redirect_url uses {local_ip}, but no local gateway IP could be detected"
+                "network.session_login_redirect_url 使用了 {local_ip}，但无法检测到通往网关的本机 IP"
                     .to_string(),
             )
         })?;
@@ -253,7 +253,7 @@ fn session_login_redirect_url(config: &AppConfig) -> Result<String> {
         if needs_local_mac {
             let local_mac = local_mac_for_gateway(config, local_ip)?.ok_or_else(|| {
                 PortalError::InvalidConfig(
-                    "network.session_login_redirect_url uses {local_mac}, but no local gateway MAC could be detected"
+                    "network.session_login_redirect_url 使用了 {local_mac}，但无法检测到通往网关的本机 MAC"
                         .to_string(),
                 )
             })?;
@@ -293,7 +293,7 @@ fn session_login_redirect_url(config: &AppConfig) -> Result<String> {
 fn nas_ip(config: &AppConfig) -> Result<String> {
     config.network.nas_ip.clone().ok_or_else(|| {
         PortalError::InvalidConfig(
-            "network.nas_ip is required for list/logout while already online; capture it from the captive redirect Location header, for example nasip=10.6.33.10"
+            "已在线时执行 list/logout 需要 network.nas_ip；请先在未登录时运行一次 login 自动捕获，或从重定向 Location 头中手动填写，例如 nasip=10.6.33.10"
                 .to_string(),
         )
     })
@@ -321,14 +321,14 @@ fn update_nas_ip_from_redirect(config: &AppConfig, config_path: Option<&Path>, r
         Ok(true) => info!(
             path = %config_path.display(),
             nas_ip = %nas_ip,
-            "updated network.nas_ip from captive redirect"
+            "已从校园网重定向更新 network.nas_ip"
         ),
         Ok(false) => {}
         Err(err) => warn!(
             path = %config_path.display(),
             nas_ip = %nas_ip,
             error = %err,
-            "failed to update network.nas_ip from captive redirect"
+            "从校园网重定向更新 network.nas_ip 失败"
         ),
     }
 }
@@ -409,7 +409,7 @@ async fn run_target_group(
     for target in targets {
         if let Err(err) = run_target(&config, config_path.as_deref(), &target).await {
             failed = true;
-            error!(target = %target.id, error = %err, "target failed");
+            error!(target = %target.id, error = %err, "目标执行失败");
         }
     }
 
@@ -430,12 +430,12 @@ async fn run_target(
         interface = target.interface_label().as_deref().unwrap_or("default"),
         bind_device = binding.interface_name.as_deref().unwrap_or("default"),
         local_ip = binding.local_ip.map(|ip| ip.to_string()).as_deref().unwrap_or("default"),
-        "checking network"
+        "正在检查网络"
     );
 
     match client.check_network().await? {
         NetworkStatus::Online => {
-            info!(target = %target.id, "already online");
+            info!(target = %target.id, "已经在线");
             Ok(())
         }
         NetworkStatus::Redirected(redirect_url) => {
@@ -454,11 +454,11 @@ async fn login_with_optional_logout(
     match client.login(&target.account, redirect_url).await? {
         LoginStatus::Success { token } => {
             let token_preview = token_preview(token.as_deref()).unwrap_or_default();
-            info!(target = %target.id, token = %token_preview, "login success");
+            info!(target = %target.id, token = %token_preview, "登录成功");
             Ok(())
         }
         LoginStatus::Overloaded { description, token } => {
-            warn!(target = %target.id, description = %description, "device limit reached");
+            warn!(target = %target.id, description = %description, "设备数量达到上限");
             if !config.logout.enabled {
                 return Err(PortalError::DeviceLimitReached);
             }
@@ -496,7 +496,7 @@ async fn logout_one_and_retry(
         .find(|session| session.mac == logout_mac)
         .ok_or(PortalError::NoLogoutCandidate)?;
 
-    info!(target = %target.id, mac = %session.mac, "logging out existing session");
+    info!(target = %target.id, mac = %session.mac, "正在下线已有设备");
     client
         .logout_session(token, &session.unique_id, &session.api_mac)
         .await?;
@@ -507,7 +507,7 @@ async fn logout_one_and_retry(
             info!(
                 target = %target.id,
                 token = %token_preview,
-                "login success after automatic logout"
+                "自动下线后登录成功"
             );
             Ok(())
         }
@@ -526,7 +526,7 @@ async fn logout_one_and_retry(
     }
 }
 
-pub fn token_preview(token: Option<&str>) -> Option<String> {
+fn token_preview(token: Option<&str>) -> Option<String> {
     token.map(|value| value.chars().take(10).collect())
 }
 
@@ -539,6 +539,6 @@ pub(crate) fn log_network_binding(target_id: &str, binding: &NetworkBinding) {
             .map(|ip| ip.to_string())
             .as_deref()
             .unwrap_or("default"),
-        "created HTTP client"
+        "已创建 HTTP 客户端"
     );
 }

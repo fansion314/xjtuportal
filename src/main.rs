@@ -1,6 +1,6 @@
 use std::{path::PathBuf, process::ExitCode};
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use tracing_subscriber::EnvFilter;
 use xjtuportal::{
@@ -8,31 +8,79 @@ use xjtuportal::{
     logout_default_session, run, run_default_login,
 };
 
+const HELP_TEMPLATE: &str = "\
+{about-with-newline}
+用法: {usage}
+
+{all-args}{after-help}";
+
 #[derive(Debug, Parser)]
-#[command(version, about = "Automatic XJTU campus portal login")]
+#[command(
+    version,
+    about = "西安交大校园网自动登录工具",
+    long_about = "西安交大校园网自动登录工具。不输入任何子命令时，会直接执行全自动登录流程；也可以使用 login/list/logout 管理当前默认账号的登录设备。",
+    disable_help_flag = true,
+    disable_help_subcommand = true,
+    disable_version_flag = true,
+    propagate_version = true,
+    help_template = HELP_TEMPLATE,
+    next_help_heading = "选项",
+    subcommand_help_heading = "命令"
+)]
 struct Args {
-    #[arg(short, long, value_name = "FILE", global = true)]
+    #[arg(short, long, value_name = "文件", global = true, help = "配置文件路径")]
     config: Option<PathBuf>,
-    #[arg(long, default_value = "info", global = true)]
+    #[arg(
+        long,
+        default_value = "info",
+        global = true,
+        help = "日志级别，例如 error、warn、info、debug"
+    )]
     log_level: String,
+    #[arg(
+        short = 'h',
+        long = "help",
+        global = true,
+        action = ArgAction::Help,
+        help = "显示帮助信息"
+    )]
+    help: Option<bool>,
+    #[arg(
+        short = 'V',
+        long = "version",
+        global = true,
+        action = ArgAction::Version,
+        help = "显示版本信息"
+    )]
+    version: Option<bool>,
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the single-account login flow from [default_account].
+    /// 使用 [default_account] 执行单账号登录。
+    #[command(help_template = HELP_TEMPLATE)]
     Login,
-    /// List sessions for [default_account].
+    /// 列出 [default_account] 当前已经登录的设备。
+    #[command(help_template = HELP_TEMPLATE)]
     List,
-    /// Logout the current session, or a session selected by MAC/name.
+    /// 下线当前设备，或下线指定 MAC/名称对应的设备。
+    #[command(help_template = HELP_TEMPLATE)]
     Logout {
-        /// MAC address, or a name configured in logout.known_macs.
+        /// MAC 地址，或 logout.known_macs 中配置的名称。
+        #[arg(help_heading = "参数")]
         selector: Option<String>,
     },
-    /// Generate shell completion scripts.
+    /// 生成 shell 自动补全脚本。
+    #[command(help_template = HELP_TEMPLATE)]
     Completions {
-        #[arg(value_enum)]
+        #[arg(
+            value_enum,
+            value_name = "SHELL",
+            help = "要生成补全脚本的 shell 类型",
+            help_heading = "参数"
+        )]
         shell: Shell,
     },
 }
@@ -53,7 +101,7 @@ async fn main() -> ExitCode {
         None => match default_config_path() {
             Ok(path) => path,
             Err(err) => {
-                tracing::error!("failed to resolve default config path: {err}");
+                tracing::error!("无法确定默认配置文件路径: {err}");
                 return ExitCode::from(2);
             }
         },
@@ -95,11 +143,7 @@ async fn main() -> ExitCode {
             logout_default_session(config, selector.as_deref(), Some(config_path))
                 .await
                 .map(|session| {
-                    println!(
-                        "logged out {} ({})",
-                        session.mac,
-                        display_name(&session.name)
-                    );
+                    println!("已下线 {} ({})", session.mac, display_name(&session.name));
                     None
                 })
         }
@@ -123,8 +167,8 @@ fn default_config_path() -> std::io::Result<PathBuf> {
 
 fn print_sessions(sessions: &[NamedSession]) {
     println!(
-        "{:<18}  {:<17}  {:<15}  {:<8}  start_time",
-        "name", "mac", "ip", "device"
+        "{:<12}  {:<17}  {:<15}  {:<8}  登录时间",
+        "名称", "MAC", "IP", "设备"
     );
     for session in sessions {
         println!(
@@ -139,7 +183,7 @@ fn print_sessions(sessions: &[NamedSession]) {
 }
 
 fn display_name(name: &str) -> &str {
-    if name.is_empty() { "unknown" } else { name }
+    if name.is_empty() { "未知" } else { name }
 }
 
 fn display_value(value: &str) -> &str {
@@ -149,7 +193,7 @@ fn display_value(value: &str) -> &str {
 fn exit_code_for_error(err: PortalError) -> ExitCode {
     match err {
         PortalError::InvalidConfig(err) => {
-            tracing::error!("invalid config: {err}");
+            tracing::error!("配置无效: {err}");
             ExitCode::from(2)
         }
         err => {

@@ -6,84 +6,84 @@ pub type Result<T> = std::result::Result<T, PortalError>;
 
 #[derive(Debug, Error)]
 pub enum PortalError {
-    #[error("failed to read config {path}: {source}")]
+    #[error("读取配置文件失败 {path}: {source}")]
     ConfigRead {
         path: String,
         source: std::io::Error,
     },
-    #[error("failed to parse config {path}: {source}")]
+    #[error("解析配置文件失败 {path}: {source}")]
     ConfigParse {
         path: String,
         source: toml::de::Error,
     },
-    #[error("failed to edit config {path}: {source}")]
+    #[error("编辑配置文件失败 {path}: {source}")]
     ConfigEdit {
         path: String,
         source: toml_edit::TomlError,
     },
-    #[error("failed to write config {path}: {source}")]
+    #[error("写入配置文件失败 {path}: {source}")]
     ConfigWrite {
         path: String,
         source: std::io::Error,
     },
-    #[error("invalid config: {0}")]
+    #[error("配置无效: {0}")]
     InvalidConfig(String),
-    #[error("failed to build HTTP client: {0}")]
+    #[error("创建 HTTP 客户端失败: {0}")]
     HttpClient(#[from] reqwest::Error),
-    #[error("HTTP request failed: {0}")]
+    #[error("HTTP 请求失败: {0}")]
     Request(reqwest::Error),
-    #[error("portal returned HTTP status {status}: {body}")]
+    #[error("校园网网关返回 HTTP 状态 {status}: {body}")]
     PortalHttpStatus {
         status: reqwest::StatusCode,
         body: String,
     },
-    #[error("portal response is missing Location header")]
+    #[error("校园网网关响应缺少 Location 头")]
     MissingRedirect,
-    #[error("portal returned unsupported network status {0}")]
+    #[error("校园网网关返回了不支持的网络状态 {0}")]
     UnsupportedNetworkStatus(reqwest::StatusCode),
-    #[error("failed to parse URL {url}: {source}")]
+    #[error("解析 URL 失败 {url}: {source}")]
     UrlParse {
         url: String,
         source: url::ParseError,
     },
-    #[error("failed to serialize JSON: {0}")]
+    #[error("序列化 JSON 失败: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("failed to decode hex: {0}")]
+    #[error("解码十六进制数据失败: {0}")]
     Hex(#[from] hex::FromHexError),
-    #[error("AES decrypt failed")]
+    #[error("AES 解密失败")]
     Decrypt,
-    #[error("AES encrypt failed")]
+    #[error("AES 加密失败")]
     Encrypt,
-    #[error("invalid HTTP header value: {0}")]
+    #[error("HTTP 头字段值无效: {0}")]
     InvalidHeaderValue(String),
-    #[error("interface {name} has no usable IPv4 address")]
+    #[error("网络接口 {name} 没有可用的 IPv4 地址")]
     InterfaceAddressMissing { name: String },
-    #[error("failed to inspect local interfaces: {0}")]
+    #[error("检查本机网络接口失败: {0}")]
     InterfaceInspect(#[from] std::io::Error),
-    #[error("login rejected: code={code:?}, error={error:?}, description={description}")]
+    #[error("登录被拒绝: code={code:?}, error={error:?}, description={description}")]
     LoginRejected {
         code: Option<i64>,
         error: Option<i64>,
         description: String,
     },
-    #[error("device limit reached and automatic logout is disabled")]
+    #[error("账号已达到设备数量上限，且自动下线功能未启用")]
     DeviceLimitReached,
-    #[error("there is no session candidate to logout")]
+    #[error("没有可下线的设备会话")]
     NoLogoutCandidate,
-    #[error("still overloaded after automatic logout: {0}")]
+    #[error("自动下线后仍然达到设备数量上限: {0}")]
     StillOverloaded(String),
-    #[error("login response did not include the token required by session APIs")]
+    #[error("登录响应中没有包含会话接口所需的 token")]
     MissingToken,
-    #[error("invalid MAC address {0}")]
+    #[error("MAC 地址无效: {0}")]
     InvalidMac(String),
-    #[error("invalid local IP address {0}")]
+    #[error("本机 IP 地址无效: {0}")]
     InvalidLocalIp(IpAddr),
-    #[error("failed to resolve gateway address {0}")]
+    #[error("解析网关地址失败: {0}")]
     GatewayResolve(String),
-    #[error("could not identify the current device session by local IP {0}")]
+    #[error("无法通过本机 IP {0} 识别当前设备会话")]
     CurrentSessionNotFound(String),
-    #[error("no session matches {0}")]
+    #[error("没有设备会话匹配 {0}")]
     SessionNotFound(String),
-    #[error("multiple sessions match name {0}")]
+    #[error("有多个设备会话匹配名称 {0}")]
     AmbiguousSessionName(String),
 }

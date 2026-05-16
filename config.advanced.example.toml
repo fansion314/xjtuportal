@@ -1,0 +1,67 @@
+# 高级配置示例。
+# 适合在 Linux/OpenWrt 上绑定指定网卡，或用一个配置文件管理多个账号/出口。
+
+[network]
+# 校园网网关地址。默认是西交校园网当前使用的 10.184.6.32。
+gateway = "10.184.6.32"
+# NAS/access-controller 地址。未登录时访问 http://1.1.1.1 的重定向里会带 nasip=...。
+# 程序遇到这种重定向时会自动把它写回当前配置文件；已在线时执行 list/logout 需要它。
+nas_ip = "10.6.33.10"
+# 网络探测地址。必须是明文 HTTP，且不要跟随重定向；通常不需要修改。
+test_url = "http://1.1.1.1"
+# v3 加密登录接口。通常不需要修改。
+login_url = "http://10.184.6.32/portal-conversion/api/v3/portal/connect"
+# 已在线时为了获取 session token 构造的登录 redirectUrl 模板。
+# 可用占位符：{local_ip}、{local_mac}、{nas_ip}。
+session_login_redirect_url = "http://10.184.6.32:80/wenet/auth?userip={local_ip}&usermac={local_mac}&nasip={nas_ip}"
+# v3 加密设备列表接口。通常不需要修改。
+session_list_url = "http://10.184.6.32/portal-conversion/api/v3/session/list"
+# v3 加密设备下线接口。通常不需要修改。
+session_logout_url = "http://10.184.6.32/portal-conversion/api/v3/session/acctUniqueId"
+# HTTP 请求超时时间，单位是秒。
+timeout_secs = 5
+
+[default_account]
+# login/list/logout 子命令使用的默认账号。
+username = "3124351080@xjtu"
+# 默认账号密码。
+password = "change-me"
+
+[logout]
+# 登录设备数量达到上限时，是否自动下线一个已有设备。
+enabled = true
+# 可选：当前设备 MAC。直接运行 `xjtuportal logout` 时会优先下线这个 MAC 对应的设备。
+# current_mac = "11:22:33:44:55:66"
+# 已知设备列表。名称用于 list 展示和 logout 按名称选择。
+known_macs = [
+  { mac = "11:22:33:44:55:66", name = "router" },
+  { mac = "aa:bb:cc:dd:ee:ff", name = "phone" },
+  "00:00:5e:00:53:01",
+]
+
+[[accounts]]
+# 账号 ID，仅在 targets 里引用，不会发送给校园网。
+id = "main"
+# 校园网账号。
+username = "3124351080@xjtu"
+# 校园网密码。
+password = "change-me"
+
+[[interfaces]]
+# 网络接口 ID，仅在 targets 里引用。
+id = "wan1"
+# 系统网卡名称。Linux/OpenWrt 上会传给 reqwest::ClientBuilder::interface()，
+# 底层使用 SO_BINDTODEVICE，比只绑定源 IP 更可靠。
+name = "eth0"
+# 可选：源 IP 绑定提示。mwan3 等策略路由场景下，只配 local_ip 仍可能走错出口，建议同时配置 name。
+# local_ip = "10.180.0.10"
+# 可选：该接口对应的 MAC。构造已在线登录 redirectUrl 或识别设备时可用。
+mac = "11:22:33:44:55:66"
+
+[[targets]]
+# 登录目标 ID，用于日志显示。
+id = "wan1-main"
+# 引用上面 [[accounts]] 中的账号 ID。
+account = "main"
+# 引用上面 [[interfaces]] 中的接口 ID。省略时使用默认路由。
+interface = "wan1"

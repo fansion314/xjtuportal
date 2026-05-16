@@ -1,47 +1,21 @@
-[network]
-gateway = "10.184.6.32"
-# NAS/access-controller IP from the unauthenticated captive redirect Location.
-# Example: http://10.184.6.32:80?userip=...&nasip=10.6.33.10&usermac=...
-nas_ip = "10.6.33.10"
-test_url = "http://1.1.1.1"
-login_url = "http://10.184.6.32/portal-conversion/api/v3/portal/connect"
-session_login_redirect_url = "http://10.184.6.32:80/wenet/auth?userip={local_ip}&usermac={local_mac}&nasip={nas_ip}"
-session_list_url = "http://10.184.6.32/portal-conversion/api/v3/session/list"
-session_logout_url = "http://10.184.6.32/portal-conversion/api/v3/session/acctUniqueId"
-timeout_secs = 5
+# 简单个人配置示例。
+# 适合只在一台电脑或路由器上使用一个校园网账号的情况。
 
 [default_account]
+# 校园网账号。一般是学号加运营商后缀，例如 3124351080@xjtu。
 username = "3124351080@xjtu"
+# 校园网密码。
 password = "change-me"
 
 [logout]
+# 登录设备数量达到上限时，是否允许程序自动下线一个已有设备后重试登录。
 enabled = true
-# Optional: set this when `xjtuportal logout` should always mean this device.
-# This is especially useful when the CLI runs behind a router/NAT and the portal
-# sees the router WAN MAC instead of the host running the command.
+# 可选：把“当前设备”的 MAC 地址固定下来。
+# 当程序运行在路由器后面，或者你希望 `xjtuportal logout` 永远下线某个设备时，可以填写。
 # current_mac = "11:22:33:44:55:66"
+# 已知设备列表。可以只写 MAC，也可以写成 { mac = "...", name = "..." } 加上助记名称。
+# `xjtuportal list` 会显示这些名称；`xjtuportal logout router` 可以按名称下线设备。
 known_macs = [
   { mac = "11:22:33:44:55:66", name = "router" },
   { mac = "aa:bb:cc:dd:ee:ff", name = "phone" },
-  "00:00:5e:00:53:01",
 ]
-
-[[accounts]]
-id = "main"
-username = "3124351080@xjtu"
-password = "change-me"
-
-[[interfaces]]
-id = "wan1"
-# On Linux/OpenWrt this is passed to reqwest::ClientBuilder::interface(),
-# which uses SO_BINDTODEVICE and is stronger than source-IP binding.
-name = "eth0"
-# Optional source-IP binding. This can help pick the address, but mwan3 policy
-# routing may still override it unless `name` is also configured.
-# local_ip = "10.180.0.10"
-mac = "11:22:33:44:55:66"
-
-[[targets]]
-id = "wan1-main"
-account = "main"
-interface = "wan1"

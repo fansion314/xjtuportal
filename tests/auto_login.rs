@@ -211,7 +211,6 @@ async fn run_updates_nas_ip_from_captive_redirect() {
 #[tokio::test]
 async fn list_default_sessions_applies_known_names() {
     let server = MockServer::start().await;
-    mount_redirect_probe(&server).await;
     mount_success_login(&server).await;
     mount_session_list(&server).await;
 
@@ -240,13 +239,6 @@ async fn list_default_sessions_applies_known_names() {
 #[tokio::test]
 async fn list_default_sessions_uses_session_redirect_url_when_online() {
     let server = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/probe"))
-        .respond_with(ResponseTemplate::new(200))
-        .expect(1)
-        .mount(&server)
-        .await;
 
     Mock::given(method("POST"))
         .and(path("/portal-conversion/api/v3/portal/connect"))
@@ -282,7 +274,6 @@ async fn list_default_sessions_uses_session_redirect_url_when_online() {
 #[tokio::test]
 async fn logout_default_session_accepts_known_name() {
     let server = MockServer::start().await;
-    mount_redirect_probe(&server).await;
     mount_success_login(&server).await;
     mount_session_list(&server).await;
 
@@ -328,7 +319,6 @@ async fn logout_default_session_accepts_known_name() {
 #[tokio::test]
 async fn logout_default_session_uses_configured_current_mac() {
     let server = MockServer::start().await;
-    mount_redirect_probe(&server).await;
     mount_success_login(&server).await;
     mount_session_list(&server).await;
 
@@ -371,12 +361,6 @@ async fn logout_default_session_uses_configured_current_mac() {
 async fn list_account_sessions_groups_configured_targets_by_account() {
     let server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/probe"))
-        .respond_with(ResponseTemplate::new(200))
-        .expect(2)
-        .mount(&server)
-        .await;
     mount_success_login_times(&server, 2).await;
     mount_session_list_times(&server, 2).await;
 
@@ -395,12 +379,6 @@ async fn list_account_sessions_groups_configured_targets_by_account() {
 async fn logout_account_sessions_accepts_known_name() {
     let server = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/probe"))
-        .respond_with(ResponseTemplate::new(200))
-        .expect(2)
-        .mount(&server)
-        .await;
     mount_success_login_times(&server, 2).await;
     mount_session_list_times(&server, 2).await;
 
@@ -440,17 +418,6 @@ struct SequentialLogin {
 
 struct AssertLoginBody {
     expected_redirect_url: String,
-}
-
-async fn mount_redirect_probe(server: &MockServer) {
-    Mock::given(method("GET"))
-        .and(path("/probe"))
-        .respond_with(
-            ResponseTemplate::new(302).insert_header("Location", "http://10.184.6.32/portal"),
-        )
-        .expect(1)
-        .mount(server)
-        .await;
 }
 
 async fn mount_success_login(server: &MockServer) {

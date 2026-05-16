@@ -258,7 +258,16 @@ async fn session_client_for_target(
     config_updater: &ConfigUpdateWriter,
     target: &ResolvedTarget,
 ) -> Result<(CampusClient, String)> {
-    let client = CampusClient::new(config.network.clone(), target.network_binding()?)?;
+    let binding = target.network_binding()?;
+    info!(
+        target = %target.id,
+        account = %target.account.username,
+        interface = target.interface_label().as_deref().unwrap_or("default"),
+        bind_device = binding.interface_name.as_deref().unwrap_or("default"),
+        local_ip = binding.local_ip.map(|ip| ip.to_string()).as_deref().unwrap_or("default"),
+        "正在获取会话 token"
+    );
+    let client = CampusClient::new(config.network.clone(), binding)?;
     let token =
         login_for_session_token(config, config_path, config_updater, target, &client).await?;
     Ok((client, token))
@@ -271,11 +280,15 @@ async fn login_for_session_token(
     target: &ResolvedTarget,
     client: &CampusClient,
 ) -> Result<String> {
-    let redirect_url = match client.check_network().await? {
-        NetworkStatus::Online => session_login_redirect_url(config, Some(target))?,
-        NetworkStatus::Redirected(redirect_url) => {
-            config_updater.update_nas_ip_from_redirect(config_path, &redirect_url);
-            redirect_url
+    let redirect_url = if config.network.nas_ip.is_some() {
+        session_login_redirect_url(config)?
+    } else {
+        match client.check_network().await? {
+            NetworkStatus::Online => session_login_redirect_url(config)?,
+            NetworkStatus::Redirected(redirect_url) => {
+                config_updater.update_nas_ip_from_redirect(config_path, &redirect_url);
+                redirect_url
+            }
         }
     };
 
@@ -473,41 +486,21 @@ fn known_mac_name<'a>(config: &'a AppConfig, mac: &str) -> Option<&'a str> {
     })
 }
 
-fn session_login_redirect_url(
-    config: &AppConfig,
-    target: Option<&ResolvedTarget>,
-) -> Result<String> {
+fn session_login_redirect_url(config: &AppConfig) -> Result<String> {
     let template = &config.network.session_login_redirect_url;
-    let user_ip = redirect_user_ip(target)?;
-    let user_mac = redirect_user_mac(config, target)?;
+    let user_ip = "0.0.0.0";
+    let user_mac = redirect_user_mac(config)?;
     let nas_ip = nas_ip(config)?;
     let value = template
-        .replace("{local_ip}", &user_ip)
+        .replace("{local_ip}", user_ip)
         .replace("{local_mac}", &user_mac)
         .replace("{nas_ip}", &nas_ip);
 
-    ensure_redirect_query(value, &user_ip, &user_mac, &nas_ip)
+    ensure_redirect_query(value, user_ip, &user_mac, &nas_ip)
 }
 
-fn redirect_user_ip(target: Option<&ResolvedTarget>) -> Result<String> {
-    if let Some(interface) = target.and_then(|target| target.interface.as_ref())
-        && let Some(local_ip) = interface.local_ip()?
-    {
-        return Ok(local_ip.to_string());
-    }
-
-    Ok("0.0.0.0".to_string())
-}
-
-fn redirect_user_mac(config: &AppConfig, target: Option<&ResolvedTarget>) -> Result<String> {
+fn redirect_user_mac(config: &AppConfig) -> Result<String> {
     if let Some(mac) = &config.logout.current_mac {
-        return portal_mac(mac);
-    }
-
-    if let Some(mac) = target
-        .and_then(|target| target.interface.as_ref())
-        .and_then(|interface| interface.mac.as_ref())
-    {
         return portal_mac(mac);
     }
 

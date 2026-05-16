@@ -13,7 +13,7 @@ struct Args {
     log_level: String,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let args = Args::parse();
     init_logging(&args.log_level);

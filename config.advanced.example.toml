@@ -12,6 +12,7 @@ test_url = "http://1.1.1.1"
 # v3 加密登录接口。通常不需要修改。
 login_url = "http://10.184.6.32/portal-conversion/api/v3/portal/connect"
 # 已在线时为了获取 session token 构造的登录 redirectUrl 模板。
+# 只有 nasip 会影响实际结果；userip/usermac 可由程序用配置值或占位值补齐。
 # 可用占位符：{local_ip}、{local_mac}、{nas_ip}。
 session_login_redirect_url = "http://10.184.6.32:80/wenet/auth?userip={local_ip}&usermac={local_mac}&nasip={nas_ip}"
 # v3 加密设备列表接口。通常不需要修改。
@@ -22,7 +23,8 @@ session_logout_url = "http://10.184.6.32/portal-conversion/api/v3/session/acctUn
 timeout_secs = 5
 
 [default_account]
-# login/list/logout 子命令使用的默认账号。
+# 单用户模式使用的默认账号。配置了 [[targets]] 后，login/list/logout 默认会按 targets/accounts 执行；
+# 临时加 `--one` 可强制本次执行只使用这里的账号。
 username = "3124000000@xjtu"
 # 默认账号密码。
 password = "change-me"

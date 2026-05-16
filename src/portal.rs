@@ -285,7 +285,7 @@ pub fn classify_login_response(response: LoginResponse) -> LoginStatus {
     let lower_description = description.to_ascii_lowercase();
     if response.code == Some(39)
         || response.error == Some(39)
-        || (response.error == Some(81) && lower_description.contains("already have"))
+        || response.error == Some(81)
         || lower_description.contains("already have")
     {
         return LoginStatus::Overloaded {
@@ -370,7 +370,7 @@ mod tests {
     fn classifies_failed_response() {
         let status = classify_login_response(LoginResponse {
             code: None,
-            error: Some(81),
+            error: Some(1),
             error_description: Some("invalid username or password".to_string()),
             token: None,
         });
@@ -379,7 +379,7 @@ mod tests {
             status,
             LoginStatus::Failed {
                 code: None,
-                error: Some(81),
+                error: Some(1),
                 description: "invalid username or password".to_string()
             }
         );

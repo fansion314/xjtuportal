@@ -231,7 +231,7 @@ fn default_login_url() -> String {
 }
 
 fn default_session_login_redirect_url() -> String {
-    "http://10.184.6.32:80/wenet/auth?userip={local_ip}&usermac={local_mac}&nasip={nas_ip}&"
+    "http://10.184.6.32:80/wenet/auth?userip={local_ip}&usermac={local_mac}&nasip={nas_ip}"
         .to_string()
 }
 

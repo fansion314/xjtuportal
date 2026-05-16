@@ -86,4 +86,6 @@ pub enum PortalError {
     SessionNotFound(String),
     #[error("有多个设备会话匹配名称 {0}")]
     AmbiguousSessionName(String),
+    #[error("后台任务执行失败: {0}")]
+    TaskJoin(String),
 }

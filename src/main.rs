@@ -4,15 +4,16 @@ use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use tracing_subscriber::EnvFilter;
 use xjtuportal::{
-    NamedSession, RunStatus, config::AppConfig, error::PortalError, list_default_sessions,
-    logout_default_session, run, run_default_login,
+    AccountSessions, NamedSession, RunStatus, config::AppConfig, error::PortalError,
+    list_account_sessions, list_default_sessions, logout_account_sessions, logout_default_session,
+    run, run_default_login,
 };
 
 const ROOT_HELP_TEMPLATE: &str = "\
 西安交大校园网自动登录工具
 
 用法: {usage}
-不输入任何子命令时，会直接执行全自动登录流程；也可以使用 login/list/logout 管理当前默认账号的登录设备。
+不输入任何子命令时，会直接执行全自动登录流程；也可以使用 login/list/logout 管理登录设备。
 
 {all-args}{after-help}";
 
@@ -26,7 +27,7 @@ const COMMAND_HELP_TEMPLATE: &str = "\
 #[command(
     version,
     about = "西安交大校园网自动登录工具",
-    long_about = "西安交大校园网自动登录工具。不输入任何子命令时，会直接执行全自动登录流程；也可以使用 login/list/logout 管理当前默认账号的登录设备。",
+    long_about = "西安交大校园网自动登录工具。不输入任何子命令时，会直接执行全自动登录流程；也可以使用 login/list/logout 管理登录设备。",
     disable_help_flag = true,
     disable_help_subcommand = true,
     disable_version_flag = true,
@@ -45,6 +46,12 @@ struct Args {
         help = "日志级别，例如 error、warn、info、debug"
     )]
     log_level: String,
+    #[arg(
+        long,
+        global = true,
+        help = "即使配置了多个 targets，也只使用 [default_account] 按单目标模式执行"
+    )]
+    one: bool,
     #[arg(
         short = 'h',
         long = "help",
@@ -67,13 +74,13 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// 使用 [default_account] 执行单账号登录。
+    /// 执行自动登录；多目标配置会登录所有 targets。
     #[command(help_template = COMMAND_HELP_TEMPLATE)]
     Login,
-    /// 列出 [default_account] 当前已经登录的设备。
+    /// 列出当前已经登录的设备；多目标配置会按账号分组展示。
     #[command(help_template = COMMAND_HELP_TEMPLATE)]
     List,
-    /// 下线当前设备，或下线指定 MAC/名称对应的设备。
+    /// 下线当前设备，或下线指定 MAC/名称对应的设备；多目标配置需要指定 MAC/名称。
     #[command(help_template = COMMAND_HELP_TEMPLATE)]
     Logout {
         /// MAC 地址，或 logout.known_macs 中配置的名称。
@@ -129,21 +136,44 @@ async fn main() -> ExitCode {
         }
     };
 
+    let multi_target_mode = !args.one && !config.targets.is_empty();
     let result = match args.command {
-        None => run(config, Some(config_path))
-            .await
-            .map(|status| match status {
-                RunStatus::Success => None,
-                RunStatus::PartialFailure => Some(ExitCode::from(1)),
-            }),
-        Some(Command::Login) => run_default_login(config, Some(config_path))
+        None if args.one => run_default_login(config, Some(config_path))
             .await
             .map(|()| None),
+        None => run(config, Some(config_path)).await.map(run_exit_code),
+        Some(Command::Login) if args.one => run_default_login(config, Some(config_path))
+            .await
+            .map(|()| None),
+        Some(Command::Login) => run(config, Some(config_path)).await.map(run_exit_code),
+        Some(Command::List) if multi_target_mode => {
+            list_account_sessions(config, Some(config_path))
+                .await
+                .map(|groups| {
+                    print_account_sessions(&groups);
+                    None
+                })
+        }
         Some(Command::List) => {
             list_default_sessions(config, Some(config_path))
                 .await
                 .map(|sessions| {
                     print_sessions(&sessions);
+                    None
+                })
+        }
+        Some(Command::Logout { selector }) if multi_target_mode => {
+            logout_account_sessions(config, selector.as_deref(), Some(config_path))
+                .await
+                .map(|sessions| {
+                    for session in sessions {
+                        println!(
+                            "已下线 {} 的 {} ({})",
+                            session.account,
+                            session.session.mac,
+                            display_name(&session.session.name)
+                        );
+                    }
                     None
                 })
         }
@@ -162,6 +192,13 @@ async fn main() -> ExitCode {
         Ok(Some(code)) => code,
         Ok(None) => ExitCode::SUCCESS,
         Err(err) => exit_code_for_error(err),
+    }
+}
+
+fn run_exit_code(status: RunStatus) -> Option<ExitCode> {
+    match status {
+        RunStatus::Success => None,
+        RunStatus::PartialFailure => Some(ExitCode::from(1)),
     }
 }
 
@@ -187,21 +224,31 @@ fn default_config_path() -> std::io::Result<PathBuf> {
     ))
 }
 
+fn print_account_sessions(groups: &[AccountSessions]) {
+    for (index, group) in groups.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        println!("账号: {}", group.account);
+        print_sessions(&group.sessions);
+    }
+}
+
 fn print_sessions(sessions: &[NamedSession]) {
     println!(
         "{}  {}  {}  {}  登录时间",
-        pad_display("名称", 10),
+        pad_display("名称", 9),
         pad_display("MAC", 18),
-        pad_display("IP", 14),
-        pad_display("设备", 7),
+        pad_display("IP", 15),
+        pad_display("设备", 8),
     );
     for session in sessions {
         println!(
             "{}  {}  {}  {}  {}",
-            pad_display(display_name(&session.name), 10),
+            pad_display(display_name(&session.name), 9),
             pad_display(&session.mac, 18),
-            pad_display(display_value(&session.user_ip), 14),
-            pad_display(display_value(&session.device_type), 7),
+            pad_display(display_value(&session.user_ip), 15),
+            pad_display(display_value(&session.device_type), 8),
             display_value(&session.start_time),
         );
     }

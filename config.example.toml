@@ -11,7 +11,7 @@ password = "change-me"
 # 登录设备数量达到上限时，是否允许程序自动下线一个已有设备后重试登录。
 enabled = true
 # 可选：把“当前设备”的 MAC 地址固定下来。
-# 当程序运行在路由器后面，或者你希望 `xjtuportal logout` 永远下线某个设备时，可以填写。
+# 当程序运行在 NAT 后面，或者你希望 `xjtuportal logout` 永远下线某个设备时，可以填写。
 # current_mac = "11:22:33:44:55:66"
 # 已知设备列表。可以只写 MAC，也可以写成 { mac = "...", name = "..." } 加上助记名称。
 # `xjtuportal list` 会显示这些名称；`xjtuportal logout router` 可以按名称下线设备。

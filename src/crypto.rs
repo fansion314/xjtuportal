@@ -1,5 +1,5 @@
 use aes::Aes128;
-use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+use aes::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 use cbc::{Decryptor, Encryptor};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -18,7 +18,7 @@ pub fn encrypt_json<T: Serialize>(value: &T) -> Result<String> {
 
 pub fn encrypt_text(text: &str) -> Result<String> {
     let ciphertext =
-        Aes128CbcEnc::new(KEY.into(), IV.into()).encrypt_padded_vec_mut::<Pkcs7>(text.as_bytes());
+        Aes128CbcEnc::new(KEY.into(), IV.into()).encrypt_padded_vec::<Pkcs7>(text.as_bytes());
     Ok(hex::encode(ciphertext))
 }
 
@@ -29,11 +29,11 @@ pub fn decrypt_json<T: DeserializeOwned>(text: &str) -> Result<T> {
 
 pub fn decrypt_text(text: &str) -> Result<String> {
     let normalized = normalize_hex_body(text)?;
-    let mut ciphertext = hex::decode(normalized)?;
+    let ciphertext = hex::decode(normalized)?;
     let plaintext = Aes128CbcDec::new(KEY.into(), IV.into())
-        .decrypt_padded_mut::<Pkcs7>(&mut ciphertext)
+        .decrypt_padded_vec::<Pkcs7>(&ciphertext)
         .map_err(|_| PortalError::Decrypt)?;
-    String::from_utf8(plaintext.to_vec()).map_err(|_| PortalError::Decrypt)
+    String::from_utf8(plaintext).map_err(|_| PortalError::Decrypt)
 }
 
 fn normalize_hex_body(text: &str) -> Result<String> {

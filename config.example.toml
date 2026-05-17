@@ -1,5 +1,7 @@
 # 简单个人配置示例。
 # 适合只在一台电脑或路由器上使用一个校园网账号的情况。
+[network]
+nas_ip = "10.6.33.10"
 
 [default_account]
 # 校园网账号。一般是学号加运营商后缀，例如 3124351080@xjtu。
@@ -15,7 +17,7 @@ enabled = true
 # current_mac = "11:22:33:44:55:66"
 # 已知设备列表。可以只写 MAC，也可以写成 { mac = "...", name = "..." } 加上助记名称。
 # `xjtuportal list` 会显示这些名称；`xjtuportal logout router` 可以按名称下线设备。
-known_macs = [
-  { mac = "11:22:33:44:55:66", name = "router" },
-  { mac = "aa:bb:cc:dd:ee:ff", name = "phone" },
-]
+# known_macs = [
+#   { mac = "11:22:33:44:55:66", name = "router" },
+#   { mac = "aa:bb:cc:dd:ee:ff", name = "phone" },
+# ]

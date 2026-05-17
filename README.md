@@ -36,7 +36,7 @@ cp config.example.toml config.toml
 
 ```toml
 [default_account]
-username = "3124351080@xjtu"
+username = "3124000000@xjtu"
 password = "change-me"
 ```
 

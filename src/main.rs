@@ -5,8 +5,9 @@ use clap_complete::{Shell, generate};
 use tracing_subscriber::EnvFilter;
 use xjtuportal::{
     AccountSessions, NamedSession, RunStatus, config::AppConfig, error::PortalError,
-    list_account_sessions, list_default_sessions, logout_account_sessions, logout_default_session,
-    run, run_default_login,
+    list_account_sessions, list_account_sessions_for_account, list_default_sessions,
+    logout_account_sessions, logout_default_session, run, run_account_login, run_default_login,
+    run_target_login,
 };
 
 const ROOT_HELP_TEMPLATE: &str = "\
@@ -76,10 +77,21 @@ struct Args {
 enum Command {
     /// 执行自动登录；多目标配置会登录所有 targets。
     #[command(help_template = COMMAND_HELP_TEMPLATE)]
-    Login,
+    Login {
+        /// 只登录指定 target ID。
+        #[arg(value_name = "TARGET_ID", help_heading = "参数")]
+        target_id: Option<String>,
+        /// 只登录指定账号 ID 的全部 targets。
+        #[arg(long, value_name = "ACCOUNT_ID", conflicts_with = "target_id")]
+        account: Option<String>,
+    },
     /// 列出当前已经登录的设备；多目标配置会按账号分组展示。
-    #[command(help_template = COMMAND_HELP_TEMPLATE)]
-    List,
+    #[command(alias = "ls", help_template = COMMAND_HELP_TEMPLATE)]
+    List {
+        /// 只查看指定账号 ID 的已登录设备。
+        #[arg(value_name = "ACCOUNT_ID", help_heading = "参数")]
+        account_id: Option<String>,
+    },
     /// 下线当前设备，或下线指定 MAC/名称对应的设备；多目标配置需要指定 MAC/名称。
     #[command(help_template = COMMAND_HELP_TEMPLATE)]
     Logout {
@@ -142,11 +154,37 @@ async fn main() -> ExitCode {
             .await
             .map(|()| None),
         None => run(config, Some(config_path)).await.map(run_exit_code),
-        Some(Command::Login) if args.one => run_default_login(config, Some(config_path))
+        Some(Command::Login {
+            target_id: Some(target_id),
+            account: None,
+        }) => run_target_login(config, Some(config_path), &target_id)
             .await
             .map(|()| None),
-        Some(Command::Login) => run(config, Some(config_path)).await.map(run_exit_code),
-        Some(Command::List) if multi_account_mode => {
+        Some(Command::Login {
+            target_id: None,
+            account: Some(account),
+        }) => run_account_login(config, Some(config_path), &account)
+            .await
+            .map(run_exit_code),
+        Some(Command::Login {
+            target_id: None,
+            account: None,
+        }) if args.one => run_default_login(config, Some(config_path))
+            .await
+            .map(|()| None),
+        Some(Command::Login {
+            target_id: None,
+            account: None,
+        }) => run(config, Some(config_path)).await.map(run_exit_code),
+        Some(Command::List {
+            account_id: Some(account_id),
+        }) => list_account_sessions_for_account(config, Some(config_path), &account_id)
+            .await
+            .map(|group| {
+                print_account_sessions(&[group]);
+                None
+            }),
+        Some(Command::List { account_id: None }) if multi_account_mode => {
             list_account_sessions(config, Some(config_path))
                 .await
                 .map(|groups| {
@@ -154,7 +192,7 @@ async fn main() -> ExitCode {
                     None
                 })
         }
-        Some(Command::List) => {
+        Some(Command::List { account_id: None }) => {
             list_default_sessions(config, Some(config_path))
                 .await
                 .map(|sessions| {
@@ -162,6 +200,7 @@ async fn main() -> ExitCode {
                     None
                 })
         }
+        Some(Command::Login { .. }) => unreachable!(),
         Some(Command::Logout { selector }) if multi_account_mode => {
             logout_account_sessions(config, selector.as_deref(), Some(config_path))
                 .await

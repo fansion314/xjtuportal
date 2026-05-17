@@ -76,6 +76,51 @@ pub async fn run_default_login(config: AppConfig, config_path: Option<PathBuf>) 
     result
 }
 
+pub async fn run_target_login(
+    config: AppConfig,
+    config_path: Option<PathBuf>,
+    target_id: &str,
+) -> Result<()> {
+    let target = config
+        .resolved_targets()?
+        .into_iter()
+        .find(|target| target.id == target_id)
+        .ok_or_else(|| PortalError::InvalidConfig(format!("找不到 target {target_id}")))?;
+    let config_updater = ConfigUpdateWriter::new(&config, config_path.clone());
+    let result = run_target(&config, config_path.as_deref(), &config_updater, &target).await;
+    config_updater.wait().await;
+    result
+}
+
+pub async fn run_account_login(
+    config: AppConfig,
+    config_path: Option<PathBuf>,
+    account_id: &str,
+) -> Result<RunStatus> {
+    let targets = config
+        .resolved_targets()?
+        .into_iter()
+        .filter(|target| target.account.id.as_deref() == Some(account_id))
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Err(PortalError::InvalidConfig(format!(
+            "账号 {account_id} 没有配置可登录的 target"
+        )));
+    }
+
+    let config_updater = Arc::new(ConfigUpdateWriter::new(&config, config_path.clone()));
+    let config = Arc::new(config);
+    let config_path = Arc::new(config_path);
+    let failed = run_target_group(config, config_path, config_updater.clone(), targets).await;
+    config_updater.wait().await;
+
+    if failed {
+        Ok(RunStatus::PartialFailure)
+    } else {
+        Ok(RunStatus::Success)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedSession {
     pub name: String,
@@ -129,12 +174,14 @@ pub async fn list_account_sessions(
     let mut tasks = JoinSet::new();
 
     for (index, (account, targets)) in account_targets.into_iter().enumerate() {
+        let account_name = account.username.clone();
         let config = config.clone();
         let config_path = config_path.clone();
         let config_updater = config_updater.clone();
         tasks.spawn(async move {
             (
                 index,
+                account_name,
                 account_sessions_for_targets(config, config_path, config_updater, account, targets)
                     .await,
             )
@@ -145,13 +192,14 @@ pub async fn list_account_sessions(
     let mut first_error = None;
     while let Some(result) = tasks.join_next().await {
         match result {
-            Ok((index, Ok(group))) => {
+            Ok((index, _, Ok(group))) => {
                 if groups.len() <= index {
                     groups.resize_with(index + 1, || None);
                 }
                 groups[index] = Some(group);
             }
-            Ok((_, Err(err))) => {
+            Ok((_, account, Err(err))) => {
+                warn!(account = %account, error = %err, "获取账号设备列表失败");
                 first_error.get_or_insert(err);
             }
             Err(err) => {
@@ -160,11 +208,38 @@ pub async fn list_account_sessions(
         }
     }
     config_updater.wait().await;
-    if let Some(err) = first_error {
+    let groups = groups.into_iter().flatten().collect::<Vec<_>>();
+    if groups.is_empty()
+        && let Some(err) = first_error
+    {
         return Err(err);
     }
 
-    Ok(groups.into_iter().flatten().collect())
+    Ok(groups)
+}
+
+pub async fn list_account_sessions_for_account(
+    config: AppConfig,
+    config_path: Option<PathBuf>,
+    account_id: &str,
+) -> Result<AccountSessions> {
+    let (account, targets) = config
+        .account_targets()?
+        .into_iter()
+        .find(|(account, _)| account.id.as_deref() == Some(account_id))
+        .ok_or_else(|| PortalError::InvalidConfig(format!("找不到账号 {account_id}")))?;
+    let config_updater = Arc::new(ConfigUpdateWriter::new(&config, config_path.clone()));
+    let config = Arc::new(config);
+    let result = account_sessions_for_targets(
+        config.clone(),
+        Arc::new(config_path),
+        config_updater.clone(),
+        account,
+        targets,
+    )
+    .await;
+    config_updater.wait().await;
+    result
 }
 
 pub async fn logout_default_session(

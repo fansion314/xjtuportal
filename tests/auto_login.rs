@@ -17,8 +17,8 @@ use xjtuportal::{
         TargetConfig,
     },
     crypto::encrypt_text,
-    list_account_sessions, list_default_sessions, logout_account_sessions, logout_default_session,
-    run,
+    list_account_sessions, list_account_sessions_for_account, list_default_sessions,
+    logout_account_sessions, logout_default_session, run, run_account_login, run_target_login,
 };
 
 #[tokio::test]
@@ -164,6 +164,32 @@ async fn already_online_does_not_login() {
     };
 
     let status = run(config, None).await.unwrap();
+
+    assert_eq!(status, RunStatus::Success);
+}
+
+#[tokio::test]
+async fn login_can_run_one_target_by_id() {
+    let server = MockServer::start().await;
+
+    mount_redirect_probe_times(&server, 1).await;
+    mount_success_login(&server).await;
+
+    run_target_login(multi_target_config(&server), None, "u2-default")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn login_can_run_all_targets_for_one_account() {
+    let server = MockServer::start().await;
+
+    mount_redirect_probe_times(&server, 2).await;
+    mount_success_login_times(&server, 2).await;
+
+    let status = run_account_login(multi_target_two_u1_config(&server), None, "u1")
+        .await
+        .unwrap();
 
     assert_eq!(status, RunStatus::Success);
 }
@@ -400,6 +426,46 @@ async fn list_account_sessions_includes_accounts_without_targets() {
 }
 
 #[tokio::test]
+async fn list_account_sessions_returns_partial_successes() {
+    let server = MockServer::start().await;
+
+    mount_online_probe(&server).await;
+    mount_success_login(&server).await;
+    mount_session_list(&server).await;
+
+    let mut config = multi_target_config(&server);
+    config.interfaces = vec![InterfaceConfig {
+        id: "bad-iface".to_string(),
+        name: Some("definitely-not-a-real-interface".to_string()),
+        local_ip: None,
+        mac: None,
+    }];
+    config.targets.truncate(1);
+    config.targets[0].interface = Some("bad-iface".to_string());
+
+    let groups = list_account_sessions(config, None).await.unwrap();
+
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].account, "u2@xjtu");
+}
+
+#[tokio::test]
+async fn list_account_sessions_can_filter_one_account() {
+    let server = MockServer::start().await;
+
+    mount_online_probe(&server).await;
+    mount_success_login(&server).await;
+    mount_session_list(&server).await;
+
+    let group = list_account_sessions_for_account(multi_target_config(&server), None, "u2")
+        .await
+        .unwrap();
+
+    assert_eq!(group.account, "u2@xjtu");
+    assert_eq!(group.sessions.len(), 2);
+}
+
+#[tokio::test]
 async fn logout_account_sessions_accepts_known_name() {
     let server = MockServer::start().await;
 
@@ -525,6 +591,17 @@ async fn mount_success_login(server: &MockServer) {
 
 async fn mount_online_probe(server: &MockServer) {
     mount_online_probe_times(server, 1).await;
+}
+
+async fn mount_redirect_probe_times(server: &MockServer, times: u64) {
+    Mock::given(method("GET"))
+        .and(path("/probe"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("Location", "http://10.184.6.32/portal"),
+        )
+        .expect(times)
+        .mount(server)
+        .await;
 }
 
 async fn mount_online_probe_times(server: &MockServer, times: u64) {
@@ -664,6 +741,19 @@ fn multi_target_config(server: &MockServer) -> AppConfig {
             },
         ],
     }
+}
+
+fn multi_target_two_u1_config(server: &MockServer) -> AppConfig {
+    let mut config = multi_target_config(server);
+    config.targets.insert(
+        1,
+        TargetConfig {
+            id: "u1-default-2".to_string(),
+            account: "u1".to_string(),
+            interface: None,
+        },
+    );
+    config
 }
 
 fn multi_target_interface_config(server: &MockServer) -> AppConfig {

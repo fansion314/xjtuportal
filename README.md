@@ -101,6 +101,22 @@ xjtuportal --one list
 xjtuportal --one logout router
 ```
 
+多账号配置下，也可以只操作其中一部分：
+
+```bash
+# 只登录指定 target
+xjtuportal login wan1-main
+
+# 登录指定账号的全部 targets
+xjtuportal login --account main
+
+# 只查看指定账号的已登录设备
+xjtuportal list main
+
+# list 的简写
+xjtuportal ls main
+```
+
 生成 shell 自动补全：
 
 ```bash

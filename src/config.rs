@@ -95,6 +95,66 @@ impl AppConfig {
             .collect()
     }
 
+    pub fn account_targets(&self) -> Result<Vec<(AccountConfig, Vec<ResolvedTarget>)>> {
+        let mut accounts_by_id = HashMap::new();
+        for account in &self.accounts {
+            validate_account(account)?;
+            if let Some(id) = &account.id {
+                accounts_by_id.insert(id.as_str(), account);
+            }
+        }
+
+        let interfaces = self
+            .interfaces
+            .iter()
+            .map(|interface| (interface.id.as_str(), interface))
+            .collect::<HashMap<_, _>>();
+        let mut targets_by_account = HashMap::<String, Vec<ResolvedTarget>>::new();
+
+        for target in &self.targets {
+            let account = accounts_by_id.get(target.account.as_str()).ok_or_else(|| {
+                PortalError::InvalidConfig(format!(
+                    "target {} 引用了不存在的账号 {}",
+                    target.id, target.account
+                ))
+            })?;
+            let interface = match &target.interface {
+                Some(interface_id) => {
+                    let interface = interfaces.get(interface_id.as_str()).ok_or_else(|| {
+                        PortalError::InvalidConfig(format!(
+                            "target {} 引用了不存在的网络接口 {}",
+                            target.id, interface_id
+                        ))
+                    })?;
+                    Some((*interface).clone())
+                }
+                None => None,
+            };
+
+            targets_by_account
+                .entry(target.account.clone())
+                .or_default()
+                .push(ResolvedTarget {
+                    id: target.id.clone(),
+                    account: (*account).clone(),
+                    interface,
+                });
+        }
+
+        Ok(self
+            .accounts
+            .iter()
+            .map(|account| {
+                let targets = account
+                    .id
+                    .as_ref()
+                    .and_then(|id| targets_by_account.remove(id))
+                    .unwrap_or_default();
+                (account.clone(), targets)
+            })
+            .collect())
+    }
+
     pub fn default_target(&self) -> Result<ResolvedTarget> {
         let account = self.default_account.clone().ok_or_else(|| {
             PortalError::InvalidConfig("缺少必需的 [default_account] 配置".to_string())

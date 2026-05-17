@@ -7,7 +7,10 @@
 
 ## 安装后的配置位置
 
-如果不传 `--config`，程序会读取“可执行文件同目录”的 `config.toml`。
+如果不传 `--config`，程序会按下面的顺序查找 `config.toml`：
+
+1. 可执行文件同目录。
+2. 当前工作目录。
 
 例如你把程序放在 `/usr/local/bin/xjtuportal`，默认配置文件就是：
 
@@ -15,7 +18,7 @@
 /usr/local/bin/config.toml
 ```
 
-开发调试时如果使用 `cargo run`，可执行文件在 `target/debug/xjtuportal`，所以建议显式指定配置：
+如果可执行文件旁边没有配置，程序会继续读取你运行命令时所在目录下的 `config.toml`。开发调试时也可以显式指定配置：
 
 ```bash
 cargo run -- --config ./config.toml
@@ -58,13 +61,13 @@ known_macs = [
 xjtuportal
 ```
 
-手动执行默认账号登录：
+手动执行登录：
 
 ```bash
 xjtuportal login
 ```
 
-查看当前账号已经登录的设备：
+查看已登录设备：
 
 ```bash
 xjtuportal list
@@ -90,6 +93,14 @@ xjtuportal --config ./config.toml login
 xjtuportal list --config ./config.toml
 ```
 
+配置了多账号时，`login`、`list`、`logout` 会按 `[[accounts]]` 和 `[[targets]]` 执行多账号流程。临时只想使用 `[default_account]` 和默认路由时，加 `--one`：
+
+```bash
+xjtuportal --one login
+xjtuportal --one list
+xjtuportal --one logout router
+```
+
 生成 shell 自动补全：
 
 ```bash
@@ -98,7 +109,7 @@ xjtuportal completions fish
 
 ## 关于 list/logout 的第一次使用
 
-校园网的设备列表接口需要一个登录 token。程序会自动用默认账号获取它。
+校园网的设备列表接口需要一个登录 token。单账号模式下程序会自动用 `[default_account]` 获取它；多账号模式下会分别用 `[[accounts]]` 中的账号获取。
 
 如果当前还没登录，校园网会把 `http://1.1.1.1` 重定向到网关，并在 URL 里带上 `nasip=...`。程序会自动把这个值写回当前配置文件的 `network.nas_ip`，以后已经在线时执行 `list`/`logout` 就不用猜这个地址。
 
@@ -150,7 +161,9 @@ cp config.advanced.example.toml config.toml
 在 Linux/OpenWrt 上，`interfaces.name` 会传给 `reqwest::ClientBuilder::interface()`，底层使用
 `SO_BINDTODEVICE`。这比只绑定 `local_ip` 更可靠，尤其是 mwan3 之类策略路由环境里。
 
-`login`、`list`、`logout` 子命令始终只使用 `[default_account]` 和默认路由；不输入子命令时的自动登录流程才会处理 `[[targets]]`。
+配置了 `[[accounts]]` 后，`login`、`list`、`logout` 和不带子命令的自动登录都会进入多账号流程。`[[targets]]` 用来为账号指定网卡；某个账号没有对应 target 时，`list`/`logout` 会像单账号模式一样使用默认路由查询该账号。
+
+需要临时绕过多账号配置时，可以加 `--one`，强制本次只使用 `[default_account]` 和默认路由。
 
 ## 验证命令
 

@@ -136,7 +136,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let multi_target_mode = !args.one && !config.targets.is_empty();
+    let multi_account_mode = !args.one && !config.accounts.is_empty();
     let result = match args.command {
         None if args.one => run_default_login(config, Some(config_path))
             .await
@@ -146,7 +146,7 @@ async fn main() -> ExitCode {
             .await
             .map(|()| None),
         Some(Command::Login) => run(config, Some(config_path)).await.map(run_exit_code),
-        Some(Command::List) if multi_target_mode => {
+        Some(Command::List) if multi_account_mode => {
             list_account_sessions(config, Some(config_path))
                 .await
                 .map(|groups| {
@@ -162,7 +162,7 @@ async fn main() -> ExitCode {
                     None
                 })
         }
-        Some(Command::Logout { selector }) if multi_target_mode => {
+        Some(Command::Logout { selector }) if multi_account_mode => {
             logout_account_sessions(config, selector.as_deref(), Some(config_path))
                 .await
                 .map(|sessions| {

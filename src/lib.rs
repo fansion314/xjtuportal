@@ -16,8 +16,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use config::{AppConfig, NetworkBinding, ResolvedTarget, write_network_nas_ip};
+use config::{AccountConfig, AppConfig, NetworkBinding, ResolvedTarget, write_network_nas_ip};
 use error::{PortalError, Result};
+use interface::interface_mac_for_ip;
 use portal::{CampusClient, LoginStatus, NetworkStatus};
 use session::{Session, choose_logout_mac, normalize_mac};
 use tokio::task::{JoinHandle, JoinSet};
@@ -121,21 +122,21 @@ pub async fn list_account_sessions(
     config: AppConfig,
     config_path: Option<PathBuf>,
 ) -> Result<Vec<AccountSessions>> {
-    let targets = config.resolved_targets()?;
-    let target_groups = group_targets_by_username(targets);
+    let account_targets = config.account_targets()?;
     let config_updater = Arc::new(ConfigUpdateWriter::new(&config, config_path.clone()));
     let config = Arc::new(config);
     let config_path = Arc::new(config_path);
     let mut tasks = JoinSet::new();
 
-    for (index, targets) in target_groups.into_iter().enumerate() {
+    for (index, (account, targets)) in account_targets.into_iter().enumerate() {
         let config = config.clone();
         let config_path = config_path.clone();
         let config_updater = config_updater.clone();
         tasks.spawn(async move {
             (
                 index,
-                account_sessions_for_targets(config, config_path, config_updater, targets).await,
+                account_sessions_for_targets(config, config_path, config_updater, account, targets)
+                    .await,
             )
         });
     }
@@ -199,21 +200,46 @@ pub async fn logout_account_sessions(
                 .to_string(),
         )
     })?;
-    let targets = config.resolved_targets()?;
-    let target_groups = group_targets_by_username(targets);
+    let account_targets = config.account_targets()?;
+    let targets = account_targets
+        .iter()
+        .flat_map(|(_, targets)| targets.iter().cloned())
+        .collect::<Vec<_>>();
+    if let Some(target) = logout_target_for_selector(&config, &targets, selector)? {
+        let config_updater = ConfigUpdateWriter::new(&config, config_path.clone());
+        let result = logout_for_single_target(
+            &config,
+            config_path.as_deref(),
+            &config_updater,
+            target,
+            selector,
+        )
+        .await;
+        config_updater.wait().await;
+        return result.map(|session| vec![session]);
+    }
+
     let config_updater = Arc::new(ConfigUpdateWriter::new(&config, config_path.clone()));
     let config = Arc::new(config);
     let config_path = Arc::new(config_path);
     let selector = Arc::new(selector.to_string());
     let mut tasks = JoinSet::new();
 
-    for targets in target_groups {
+    for (account, targets) in account_targets {
         let config = config.clone();
         let config_path = config_path.clone();
         let config_updater = config_updater.clone();
         let selector = selector.clone();
         tasks.spawn(async move {
-            logout_for_target_account(config, config_path, config_updater, targets, &selector).await
+            logout_for_target_account(
+                config,
+                config_path,
+                config_updater,
+                account,
+                targets,
+                &selector,
+            )
+            .await
         });
     }
 
@@ -241,6 +267,49 @@ pub async fn logout_account_sessions(
     }
 
     Ok(logged_out)
+}
+
+fn logout_target_for_selector(
+    config: &AppConfig,
+    targets: &[ResolvedTarget],
+    selector: &str,
+) -> Result<Option<ResolvedTarget>> {
+    let Some(selector_mac) = selector_mac(config, selector)? else {
+        return Ok(None);
+    };
+
+    Ok(targets
+        .iter()
+        .find(|target| {
+            target
+                .interface
+                .as_ref()
+                .and_then(|interface| interface.mac.as_deref())
+                .and_then(|mac| normalize_mac(mac).ok())
+                .as_deref()
+                == Some(selector_mac.as_str())
+        })
+        .cloned())
+}
+
+fn selector_mac(config: &AppConfig, selector: &str) -> Result<Option<String>> {
+    if let Ok(mac) = normalize_mac(selector) {
+        return Ok(Some(mac));
+    }
+
+    let macs = config
+        .logout
+        .known_macs
+        .iter()
+        .filter(|known| known.name.as_deref() == Some(selector))
+        .filter_map(|known| normalize_mac(&known.mac).ok())
+        .collect::<Vec<_>>();
+
+    match macs.as_slice() {
+        [] => Ok(None),
+        [mac] => Ok(Some(mac.clone())),
+        _ => Err(PortalError::AmbiguousSessionName(selector.to_string())),
+    }
 }
 
 async fn default_session_client(
@@ -280,16 +349,15 @@ async fn login_for_session_token(
     target: &ResolvedTarget,
     client: &CampusClient,
 ) -> Result<String> {
-    let redirect_url = if config.network.nas_ip.is_some() {
-        session_login_redirect_url(config)?
-    } else {
-        match client.check_network().await? {
-            NetworkStatus::Online => session_login_redirect_url(config)?,
+    let redirect_url = match (&target.interface, config.network.nas_ip.as_ref()) {
+        (Some(_), Some(_)) => session_login_redirect_url(config, target)?,
+        _ => match client.check_network().await? {
+            NetworkStatus::Online => session_login_redirect_url(config, target)?,
             NetworkStatus::Redirected(redirect_url) => {
                 config_updater.update_nas_ip_from_redirect(config_path, &redirect_url);
                 redirect_url
             }
-        }
+        },
     };
 
     match client.login(&target.account, &redirect_url).await? {
@@ -318,19 +386,18 @@ async fn account_sessions_for_targets(
     config: Arc<AppConfig>,
     config_path: Arc<Option<PathBuf>>,
     config_updater: Arc<ConfigUpdateWriter>,
+    account: AccountConfig,
     targets: Vec<ResolvedTarget>,
 ) -> Result<AccountSessions> {
-    let account = targets
-        .first()
-        .map(|target| target.account.username.clone())
-        .unwrap_or_default();
+    let account_name = account.username.clone();
+    let targets = account_session_targets(account, targets);
     let (client, token) =
         session_client_for_any_target(&config, config_path.as_deref(), &config_updater, &targets)
             .await?;
     let sessions = client.list_sessions(&token).await?;
 
     Ok(AccountSessions {
-        account,
+        account: account_name,
         sessions: sessions
             .iter()
             .map(|session| named_session(&config, session))
@@ -338,17 +405,37 @@ async fn account_sessions_for_targets(
     })
 }
 
+fn account_session_targets(
+    account: AccountConfig,
+    targets: Vec<ResolvedTarget>,
+) -> Vec<ResolvedTarget> {
+    if !targets.is_empty() {
+        return targets;
+    }
+
+    let target_id = account
+        .id
+        .as_deref()
+        .map(|id| format!("{id}-default"))
+        .unwrap_or_else(|| "default".to_string());
+
+    vec![ResolvedTarget {
+        id: target_id,
+        account,
+        interface: None,
+    }]
+}
+
 async fn logout_for_target_account(
     config: Arc<AppConfig>,
     config_path: Arc<Option<PathBuf>>,
     config_updater: Arc<ConfigUpdateWriter>,
+    account: AccountConfig,
     targets: Vec<ResolvedTarget>,
     selector: &str,
 ) -> Result<Option<AccountLogout>> {
-    let account = targets
-        .first()
-        .map(|target| target.account.username.clone())
-        .unwrap_or_default();
+    let account_name = account.username.clone();
+    let targets = account_session_targets(account, targets);
     let (client, token) =
         session_client_for_any_target(&config, config_path.as_deref(), &config_updater, &targets)
             .await?;
@@ -364,9 +451,32 @@ async fn logout_for_target_account(
         .await?;
 
     Ok(Some(AccountLogout {
-        account,
+        account: account_name,
         session: logged_out,
     }))
+}
+
+async fn logout_for_single_target(
+    config: &AppConfig,
+    config_path: Option<&Path>,
+    config_updater: &ConfigUpdateWriter,
+    target: ResolvedTarget,
+    selector: &str,
+) -> Result<AccountLogout> {
+    let account = target.account.username.clone();
+    let (client, token) =
+        session_client_for_target(config, config_path, config_updater, &target).await?;
+    let sessions = client.list_sessions(&token).await?;
+    let session = select_session_by_selector(config, &sessions, selector)?;
+    let logged_out = named_session(config, session);
+    client
+        .logout_session(&token, &session.unique_id, &session.api_mac)
+        .await?;
+
+    Ok(AccountLogout {
+        account,
+        session: logged_out,
+    })
 }
 
 async fn session_client_for_any_target(
@@ -486,17 +596,41 @@ fn known_mac_name<'a>(config: &'a AppConfig, mac: &str) -> Option<&'a str> {
     })
 }
 
-fn session_login_redirect_url(config: &AppConfig) -> Result<String> {
+fn session_login_redirect_url(config: &AppConfig, target: &ResolvedTarget) -> Result<String> {
     let template = &config.network.session_login_redirect_url;
-    let user_ip = "0.0.0.0";
-    let user_mac = redirect_user_mac(config)?;
+    let (user_ip, user_mac) = redirect_user_identity(config, target)?;
     let nas_ip = nas_ip(config)?;
     let value = template
-        .replace("{local_ip}", user_ip)
+        .replace("{local_ip}", &user_ip)
         .replace("{local_mac}", &user_mac)
         .replace("{nas_ip}", &nas_ip);
 
-    ensure_redirect_query(value, user_ip, &user_mac, &nas_ip)
+    ensure_redirect_query(value, &user_ip, &user_mac, &nas_ip)
+}
+
+fn redirect_user_identity(config: &AppConfig, target: &ResolvedTarget) -> Result<(String, String)> {
+    let Some(interface) = &target.interface else {
+        return Ok(("0.0.0.0".to_string(), redirect_user_mac(config)?));
+    };
+
+    let local_ip = interface.local_ip()?.ok_or_else(|| {
+        PortalError::InvalidConfig(format!(
+            "target {} 的 interface {} 缺少 local_ip 或 name，无法构造真实 redirectUrl",
+            target.id, interface.id
+        ))
+    })?;
+    let mac = if let Some(mac) = &interface.mac {
+        portal_mac(mac)?
+    } else if let Some(mac) = interface_mac_for_ip(local_ip)? {
+        portal_mac(&mac)?
+    } else {
+        return Err(PortalError::InvalidConfig(format!(
+            "target {} 的 interface {} 缺少 mac，且无法从本机网卡查询到 MAC",
+            target.id, interface.id
+        )));
+    };
+
+    Ok((local_ip.to_string(), mac))
 }
 
 fn redirect_user_mac(config: &AppConfig) -> Result<String> {
@@ -867,4 +1001,95 @@ pub(crate) fn log_network_binding(target_id: &str, binding: &NetworkBinding) {
             .unwrap_or("default"),
         "已创建 HTTP 客户端"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AccountConfig, InterfaceConfig, LogoutConfig, NetworkConfig};
+
+    #[test]
+    fn session_redirect_url_uses_target_interface_identity() {
+        let config = test_config(
+            Some("10.6.33.10"),
+            LogoutConfig {
+                current_mac: Some("11:22:33:44:55:66".to_string()),
+                ..LogoutConfig::default()
+            },
+        );
+        let target = ResolvedTarget {
+            id: "wan1-main".to_string(),
+            account: test_account(),
+            interface: Some(InterfaceConfig {
+                id: "wan1".to_string(),
+                name: None,
+                local_ip: Some("10.180.0.10".parse().unwrap()),
+                mac: Some("aa:bb:cc:dd:ee:ff".to_string()),
+            }),
+        };
+
+        let redirect_url = session_login_redirect_url(&config, &target).unwrap();
+
+        assert_eq!(
+            redirect_url,
+            "http://10.184.6.32:80/wenet/auth?userip=10.180.0.10&usermac=aa-bb-cc-dd-ee-ff&nasip=10.6.33.10"
+        );
+    }
+
+    #[test]
+    fn session_redirect_url_without_interface_uses_fallback_identity() {
+        let config = test_config(
+            Some("10.6.33.10"),
+            LogoutConfig {
+                current_mac: Some("11:22:33:44:55:66".to_string()),
+                ..LogoutConfig::default()
+            },
+        );
+        let target = ResolvedTarget {
+            id: "default".to_string(),
+            account: test_account(),
+            interface: None,
+        };
+
+        let redirect_url = session_login_redirect_url(&config, &target).unwrap();
+
+        assert_eq!(
+            redirect_url,
+            "http://10.184.6.32:80/wenet/auth?userip=0.0.0.0&usermac=11-22-33-44-55-66&nasip=10.6.33.10"
+        );
+    }
+
+    fn test_config(nas_ip: Option<&str>, logout: LogoutConfig) -> AppConfig {
+        AppConfig {
+            network: NetworkConfig {
+                gateway: "http://10.184.6.32".to_string(),
+                nas_ip: nas_ip.map(str::to_string),
+                test_url: "http://1.1.1.1".to_string(),
+                login_url: "http://10.184.6.32/portal-conversion/api/v3/portal/connect"
+                    .to_string(),
+                session_login_redirect_url:
+                    "http://10.184.6.32:80/wenet/auth?userip={local_ip}&usermac={local_mac}&nasip={nas_ip}"
+                        .to_string(),
+                session_list_url: "http://10.184.6.32/portal-conversion/api/v3/session/list"
+                    .to_string(),
+                session_logout_url:
+                    "http://10.184.6.32/portal-conversion/api/v3/session/acctUniqueId"
+                        .to_string(),
+                timeout_secs: 5,
+            },
+            default_account: None,
+            logout,
+            accounts: vec![],
+            interfaces: vec![],
+            targets: vec![],
+        }
+    }
+
+    fn test_account() -> AccountConfig {
+        AccountConfig {
+            id: Some("main".to_string()),
+            username: "u@xjtu".to_string(),
+            password: "p".to_string(),
+        }
+    }
 }

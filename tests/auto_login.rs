@@ -211,6 +211,7 @@ async fn run_updates_nas_ip_from_captive_redirect() {
 #[tokio::test]
 async fn list_default_sessions_applies_known_names() {
     let server = MockServer::start().await;
+    mount_online_probe(&server).await;
     mount_success_login(&server).await;
     mount_session_list(&server).await;
 
@@ -240,6 +241,7 @@ async fn list_default_sessions_applies_known_names() {
 async fn list_default_sessions_uses_session_redirect_url_when_online() {
     let server = MockServer::start().await;
 
+    mount_online_probe(&server).await;
     Mock::given(method("POST"))
         .and(path("/portal-conversion/api/v3/portal/connect"))
         .respond_with(AssertLoginBody {
@@ -274,6 +276,7 @@ async fn list_default_sessions_uses_session_redirect_url_when_online() {
 #[tokio::test]
 async fn logout_default_session_accepts_known_name() {
     let server = MockServer::start().await;
+    mount_online_probe(&server).await;
     mount_success_login(&server).await;
     mount_session_list(&server).await;
 
@@ -319,6 +322,7 @@ async fn logout_default_session_accepts_known_name() {
 #[tokio::test]
 async fn logout_default_session_uses_configured_current_mac() {
     let server = MockServer::start().await;
+    mount_online_probe(&server).await;
     mount_success_login(&server).await;
     mount_session_list(&server).await;
 
@@ -361,6 +365,7 @@ async fn logout_default_session_uses_configured_current_mac() {
 async fn list_account_sessions_groups_configured_targets_by_account() {
     let server = MockServer::start().await;
 
+    mount_online_probe_times(&server, 2).await;
     mount_success_login_times(&server, 2).await;
     mount_session_list_times(&server, 2).await;
 
@@ -376,9 +381,29 @@ async fn list_account_sessions_groups_configured_targets_by_account() {
 }
 
 #[tokio::test]
+async fn list_account_sessions_includes_accounts_without_targets() {
+    let server = MockServer::start().await;
+
+    mount_online_probe_times(&server, 2).await;
+    mount_success_login_times(&server, 2).await;
+    mount_session_list_times(&server, 2).await;
+
+    let mut config = multi_target_config(&server);
+    config.targets.truncate(1);
+
+    let groups = list_account_sessions(config, None).await.unwrap();
+
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].account, "u1@xjtu");
+    assert_eq!(groups[1].account, "u2@xjtu");
+    assert!(groups.iter().all(|group| group.sessions.len() == 2));
+}
+
+#[tokio::test]
 async fn logout_account_sessions_accepts_known_name() {
     let server = MockServer::start().await;
 
+    mount_online_probe_times(&server, 2).await;
     mount_success_login_times(&server, 2).await;
     mount_session_list_times(&server, 2).await;
 
@@ -411,6 +436,80 @@ async fn logout_account_sessions_accepts_known_name() {
     );
 }
 
+#[tokio::test]
+async fn logout_account_sessions_includes_accounts_without_targets() {
+    let server = MockServer::start().await;
+
+    mount_online_probe_times(&server, 2).await;
+    mount_success_login_times(&server, 2).await;
+    mount_session_list_times(&server, 2).await;
+
+    Mock::given(method("POST"))
+        .and(path("/portal-conversion/api/v3/session/acctUniqueId"))
+        .and(body_string(
+            encrypt_text(
+                &serde_json::json!({
+                    "acctUniqueId": "keep-me",
+                    "mac": "11:22:33:44:55:66"
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        ))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let mut config = multi_target_config(&server);
+    config.targets.truncate(1);
+
+    let logged_out = logout_account_sessions(config, Some("phone"), None)
+        .await
+        .unwrap();
+
+    assert_eq!(logged_out.len(), 2);
+    assert_eq!(logged_out[0].account, "u1@xjtu");
+    assert_eq!(logged_out[1].account, "u2@xjtu");
+}
+
+#[tokio::test]
+async fn logout_account_sessions_uses_matching_target_directly() {
+    let server = MockServer::start().await;
+
+    mount_success_login(&server).await;
+    mount_session_list(&server).await;
+
+    Mock::given(method("POST"))
+        .and(path("/portal-conversion/api/v3/session/acctUniqueId"))
+        .and(body_string(
+            encrypt_text(
+                &serde_json::json!({
+                    "acctUniqueId": "keep-me",
+                    "mac": "11:22:33:44:55:66"
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        ))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let logged_out = logout_account_sessions(
+        multi_target_interface_config(&server),
+        Some("11:22:33:44:55:66"),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(logged_out.len(), 1);
+    assert_eq!(logged_out[0].account, "u2@xjtu");
+    assert_eq!(logged_out[0].session.mac, "11:22:33:44:55:66");
+}
+
 #[derive(Clone)]
 struct SequentialLogin {
     calls: Arc<AtomicUsize>,
@@ -422,6 +521,19 @@ struct AssertLoginBody {
 
 async fn mount_success_login(server: &MockServer) {
     mount_success_login_times(server, 1).await;
+}
+
+async fn mount_online_probe(server: &MockServer) {
+    mount_online_probe_times(server, 1).await;
+}
+
+async fn mount_online_probe_times(server: &MockServer, times: u64) {
+    Mock::given(method("GET"))
+        .and(path("/probe"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(times)
+        .mount(server)
+        .await;
 }
 
 async fn mount_success_login_times(server: &MockServer, times: u64) {
@@ -552,6 +664,37 @@ fn multi_target_config(server: &MockServer) -> AppConfig {
             },
         ],
     }
+}
+
+fn multi_target_interface_config(server: &MockServer) -> AppConfig {
+    let mut config = multi_target_config(server);
+    config.interfaces = vec![
+        InterfaceConfig {
+            id: "wan1".to_string(),
+            name: None,
+            local_ip: Some("127.0.0.1".parse().unwrap()),
+            mac: Some("00:00:5e:00:53:01".to_string()),
+        },
+        InterfaceConfig {
+            id: "wan2".to_string(),
+            name: None,
+            local_ip: Some("127.0.0.1".parse().unwrap()),
+            mac: Some("11:22:33:44:55:66".to_string()),
+        },
+    ];
+    config.targets = vec![
+        TargetConfig {
+            id: "u1-wan1".to_string(),
+            account: "u1".to_string(),
+            interface: Some("wan1".to_string()),
+        },
+        TargetConfig {
+            id: "u2-wan2".to_string(),
+            account: "u2".to_string(),
+            interface: Some("wan2".to_string()),
+        },
+    ];
+    config
 }
 
 impl Respond for SequentialLogin {

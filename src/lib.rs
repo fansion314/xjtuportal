@@ -1,3 +1,11 @@
+//! High-level orchestration for unattended campus portal login.
+//!
+//! This crate is the reusable core behind the CLI. It resolves TOML
+//! configuration into login targets, checks captive-portal state, performs v3
+//! encrypted login, lists sessions, and optionally logs out one existing device
+//! before retrying. The default behavior remains unattended login; interactive
+//! shell-style flows should not be reintroduced here.
+
 pub mod config;
 pub mod crypto;
 pub mod error;
@@ -25,13 +33,27 @@ use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, info, warn};
 use url::Url;
 
+/// Overall result of running one or more login targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunStatus {
+    /// Every requested target completed successfully.
     Success,
+    /// At least one target failed while other target groups may have succeeded.
     PartialFailure,
 }
 
+/// Runs the automatic login flow for every resolved target in the configuration.
+///
+/// Targets are grouped by username and each account group runs concurrently.
+/// Within a group, targets run sequentially so repeated logins for the same
+/// account do not race against portal device-limit behavior.
+///
+/// # Errors
+///
+/// Returns configuration resolution errors before any target is spawned.
 pub async fn run(config: AppConfig, config_path: Option<PathBuf>) -> Result<RunStatus> {
+    // 实现说明：按 username 分组是为了避免同一账号的多接口登录互相抢设备名额；
+    // 不同账号之间可以并行缩短 unattended 任务耗时。
     let targets = config.resolved_targets()?;
     let target_groups = group_targets_by_username(targets);
     let config_updater = Arc::new(ConfigUpdateWriter::new(&config, config_path.clone()));
@@ -68,7 +90,16 @@ pub async fn run(config: AppConfig, config_path: Option<PathBuf>) -> Result<RunS
     }
 }
 
+/// Runs only the simple-mode default login target.
+///
+/// This is used by `--one` and by legacy single-account operation.
+///
+/// # Errors
+///
+/// Returns configuration, network, login, session, or automatic-logout errors
+/// from the single target flow.
 pub async fn run_default_login(config: AppConfig, config_path: Option<PathBuf>) -> Result<()> {
+    // 实现说明：这里不走 JoinSet，保持单目标错误直接返回给 CLI。
     let target = config.default_target()?;
     let config_updater = ConfigUpdateWriter::new(&config, config_path.clone());
     let result = run_target(&config, config_path.as_deref(), &config_updater, &target).await;
@@ -76,11 +107,18 @@ pub async fn run_default_login(config: AppConfig, config_path: Option<PathBuf>) 
     result
 }
 
+/// Runs the login flow for one configured target ID.
+///
+/// # Errors
+///
+/// Returns [`PortalError::InvalidConfig`] if `target_id` is unknown, or target
+/// runtime errors from the login flow.
 pub async fn run_target_login(
     config: AppConfig,
     config_path: Option<PathBuf>,
     target_id: &str,
 ) -> Result<()> {
+    // 实现说明：先解析全部 target 再查找，确保引用校验和普通 run 保持一致。
     let target = config
         .resolved_targets()?
         .into_iter()
@@ -92,11 +130,18 @@ pub async fn run_target_login(
     result
 }
 
+/// Runs login for every target belonging to one account ID.
+///
+/// # Errors
+///
+/// Returns [`PortalError::InvalidConfig`] if no target references `account_id`,
+/// or runtime errors from target execution.
 pub async fn run_account_login(
     config: AppConfig,
     config_path: Option<PathBuf>,
     account_id: &str,
 ) -> Result<RunStatus> {
+    // 实现说明：账号内 targets 仍复用 run_target_group 的顺序执行策略。
     let targets = config
         .resolved_targets()?
         .into_iter()
@@ -121,33 +166,54 @@ pub async fn run_account_login(
     }
 }
 
+/// Session information enriched with configured device names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedSession {
+    /// Configured known-MAC name, or `未知` when not configured.
     pub name: String,
+    /// Normalized MAC used for display and selection.
     pub mac: String,
+    /// API-provided MAC preserved for logout payloads.
     pub api_mac: String,
+    /// Portal-reported device type.
     pub device_type: String,
+    /// Portal-reported user IP.
     pub user_ip: String,
+    /// Portal-reported session start time.
     pub start_time: String,
+    /// Accounting unique ID required by the logout API.
     pub unique_id: String,
 }
 
+/// Sessions belonging to one account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountSessions {
+    /// Account username.
     pub account: String,
+    /// Sessions currently active for the account.
     pub sessions: Vec<NamedSession>,
 }
 
+/// Result of logging out one session for an account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountLogout {
+    /// Account username.
     pub account: String,
+    /// Session that was logged out.
     pub session: NamedSession,
 }
 
+/// Lists sessions for the simple-mode default account.
+///
+/// # Errors
+///
+/// Returns configuration, login-token, request, or decryption errors.
 pub async fn list_default_sessions(
     config: AppConfig,
     config_path: Option<PathBuf>,
 ) -> Result<Vec<NamedSession>> {
+    // 实现说明：session API token 来自一次登录调用；如果当前在线且已有 nas_ip，则
+    // 构造 redirectUrl 获取 token。
     let config_updater = ConfigUpdateWriter::new(&config, config_path.clone());
     let result = async {
         let (client, token) =
@@ -163,10 +229,21 @@ pub async fn list_default_sessions(
     result
 }
 
+/// Lists sessions for all configured accounts.
+///
+/// Accounts are processed concurrently. If at least one account succeeds, failed
+/// accounts are logged and omitted from the result; if all fail, the first error
+/// is returned.
+///
+/// # Errors
+///
+/// Returns configuration resolution errors before spawning tasks, or the first
+/// account error when no account could be listed.
 pub async fn list_account_sessions(
     config: AppConfig,
     config_path: Option<PathBuf>,
 ) -> Result<Vec<AccountSessions>> {
+    // 实现说明：结果按原 account 顺序重排，避免 JoinSet 完成顺序影响 CLI 输出。
     let account_targets = config.account_targets()?;
     let config_updater = Arc::new(ConfigUpdateWriter::new(&config, config_path.clone()));
     let config = Arc::new(config);
@@ -218,11 +295,19 @@ pub async fn list_account_sessions(
     Ok(groups)
 }
 
+/// Lists sessions for one configured account ID.
+///
+/// # Errors
+///
+/// Returns [`PortalError::InvalidConfig`] if the account is unknown, or session
+/// access errors from the account flow.
 pub async fn list_account_sessions_for_account(
     config: AppConfig,
     config_path: Option<PathBuf>,
     account_id: &str,
 ) -> Result<AccountSessions> {
+    // 实现说明：复用 account_sessions_for_targets，让无显式 targets 的账号也能走
+    // synthetic default target。
     let (account, targets) = config
         .account_targets()?
         .into_iter()
@@ -242,11 +327,23 @@ pub async fn list_account_sessions_for_account(
     result
 }
 
+/// Logs out one session for the simple-mode default account.
+///
+/// When `selector` is provided, it may be a MAC address or a name from
+/// `logout.known_macs`. Without a selector, the function tries
+/// `logout.current_mac`, a single active session, or the local route IP.
+///
+/// # Errors
+///
+/// Returns session selection errors when no unique candidate can be found, plus
+/// any configuration, login-token, or request errors.
 pub async fn logout_default_session(
     config: AppConfig,
     selector: Option<&str>,
     config_path: Option<PathBuf>,
 ) -> Result<NamedSession> {
+    // 实现说明：先把将要下线的 session 转成 NamedSession，再调用 logout；这样上层
+    // 可以在成功后展示完整信息。
     let config_updater = ConfigUpdateWriter::new(&config, config_path.clone());
     let result = async {
         let (client, token) =
@@ -264,11 +361,23 @@ pub async fn logout_default_session(
     result
 }
 
+/// Logs out sessions matching a selector across account targets.
+///
+/// Multi-account logout requires a selector. If the selector maps to a target
+/// interface MAC, only that target is queried. Otherwise all accounts are
+/// searched and every matching account session is logged out.
+///
+/// # Errors
+///
+/// Returns [`PortalError::InvalidConfig`] when selector is missing, session
+/// lookup errors when nothing matches, or runtime errors from matching accounts.
 pub async fn logout_account_sessions(
     config: AppConfig,
     selector: Option<&str>,
     config_path: Option<PathBuf>,
 ) -> Result<Vec<AccountLogout>> {
+    // 实现说明：先尝试通过 selector 精准定位 target，避免多接口场景中为了下线一个
+    // 明确设备而查询所有账号。
     let selector = selector.ok_or_else(|| {
         PortalError::InvalidConfig(
             "多账号/多网卡模式下执行 logout 需要指定 MAC，或 logout.known_macs 中配置的名称"
@@ -344,11 +453,19 @@ pub async fn logout_account_sessions(
     Ok(logged_out)
 }
 
+/// Finds a target whose configured interface MAC matches a logout selector.
+///
+/// # Errors
+///
+/// Returns [`PortalError::AmbiguousSessionName`] if the selector name maps to
+/// multiple known MAC entries.
 fn logout_target_for_selector(
     config: &AppConfig,
     targets: &[ResolvedTarget],
     selector: &str,
 ) -> Result<Option<ResolvedTarget>> {
+    // 实现说明：只匹配 interface.mac，因为这是唯一能在查询 session API 前定位
+    // 具体 target 的本地信息。
     let Some(selector_mac) = selector_mac(config, selector)? else {
         return Ok(None);
     };
@@ -367,7 +484,17 @@ fn logout_target_for_selector(
         .cloned())
 }
 
+/// Resolves a user selector to a normalized MAC if possible.
+///
+/// The selector may be a MAC address or a name from `logout.known_macs`.
+///
+/// # Errors
+///
+/// Returns [`PortalError::AmbiguousSessionName`] if the name is configured more
+/// than once.
 fn selector_mac(config: &AppConfig, selector: &str) -> Result<Option<String>> {
+    // 实现说明：直接 MAC 优先；名称查找忽略格式无效的 known_macs，让配置里的其它
+    // 名称不影响当前 selector。
     if let Ok(mac) = normalize_mac(selector) {
         return Ok(Some(mac));
     }
@@ -387,21 +514,34 @@ fn selector_mac(config: &AppConfig, selector: &str) -> Result<Option<String>> {
     }
 }
 
+/// Builds a session-capable client for the default account.
+///
+/// # Errors
+///
+/// Returns default target resolution or token acquisition errors.
 async fn default_session_client(
     config: &AppConfig,
     config_path: Option<&Path>,
     config_updater: &ConfigUpdateWriter,
 ) -> Result<(CampusClient, String)> {
+    // 实现说明：默认模式没有 target ID 参数，统一转成 synthetic default target。
     let target = config.default_target()?;
     session_client_for_target(config, config_path, config_updater, &target).await
 }
 
+/// Builds a bound client and obtains a session API token for a target.
+///
+/// # Errors
+///
+/// Returns network binding, client construction, probe, login, or token errors.
 async fn session_client_for_target(
     config: &AppConfig,
     config_path: Option<&Path>,
     config_updater: &ConfigUpdateWriter,
     target: &ResolvedTarget,
 ) -> Result<(CampusClient, String)> {
+    // 实现说明：session API 需要 token；token 不是独立接口获取，而是通过一次 v3
+    // login 响应获得。
     let binding = target.network_binding()?;
     debug!(
         target = %target.id,
@@ -417,6 +557,12 @@ async fn session_client_for_target(
     Ok((client, token))
 }
 
+/// Performs the login exchange needed to obtain a session API token.
+///
+/// # Errors
+///
+/// Returns [`PortalError::MissingToken`] if a success/overloaded response omits
+/// the token, or login/probe errors for other failures.
 async fn login_for_session_token(
     config: &AppConfig,
     config_path: Option<&Path>,
@@ -424,6 +570,8 @@ async fn login_for_session_token(
     target: &ResolvedTarget,
     client: &CampusClient,
 ) -> Result<String> {
+    // 实现说明：如果配置了接口且已有 nas_ip，可直接构造真实 redirectUrl；否则先
+    // probe 网络，以便从 captive redirect 捕获 nasip 并写回配置。
     let redirect_url = match (&target.interface, config.network.nas_ip.as_ref()) {
         (Some(_), Some(_)) => session_login_redirect_url(config, target)?,
         _ => match client.check_network().await? {
@@ -457,6 +605,12 @@ async fn login_for_session_token(
     }
 }
 
+/// Lists sessions for an account using any viable target for that account.
+///
+/// # Errors
+///
+/// Returns an error if no target can produce a session token or the session API
+/// request fails.
 async fn account_sessions_for_targets(
     config: Arc<AppConfig>,
     config_path: Arc<Option<PathBuf>>,
@@ -464,6 +618,8 @@ async fn account_sessions_for_targets(
     account: AccountConfig,
     targets: Vec<ResolvedTarget>,
 ) -> Result<AccountSessions> {
+    // 实现说明：一个账号的任意 target 都能访问该账号的 session 列表；逐个 target
+    // 尝试提高多网卡配置下的容错性。
     let account_name = account.username.clone();
     let targets = account_session_targets(account, targets);
     let (client, token) =
@@ -480,10 +636,13 @@ async fn account_sessions_for_targets(
     })
 }
 
+/// Returns explicit account targets or creates a synthetic default target.
 fn account_session_targets(
     account: AccountConfig,
     targets: Vec<ResolvedTarget>,
 ) -> Vec<ResolvedTarget> {
+    // 实现说明：允许只有 [[accounts]] 而没有 [[targets]] 的账号执行 list/logout，
+    // 此时使用默认路由访问 session API。
     if !targets.is_empty() {
         return targets;
     }
@@ -501,6 +660,14 @@ fn account_session_targets(
     }]
 }
 
+/// Searches one account's sessions and logs out a matching selector when found.
+///
+/// Returns `Ok(None)` when the selector does not match this account, allowing
+/// callers to continue searching other accounts.
+///
+/// # Errors
+///
+/// Returns token, list, ambiguous selector, or logout errors.
 async fn logout_for_target_account(
     config: Arc<AppConfig>,
     config_path: Arc<Option<PathBuf>>,
@@ -509,6 +676,8 @@ async fn logout_for_target_account(
     targets: Vec<ResolvedTarget>,
     selector: &str,
 ) -> Result<Option<AccountLogout>> {
+    // 实现说明：账号内 selector 找不到时返回 Ok(None)，让跨账号 logout 可以继续
+    // 搜索其它账号；真正的协议/配置错误仍向上传播。
     let account_name = account.username.clone();
     let targets = account_session_targets(account, targets);
     let (client, token) =
@@ -531,6 +700,11 @@ async fn logout_for_target_account(
     }))
 }
 
+/// Logs out a matching session through one already selected target.
+///
+/// # Errors
+///
+/// Returns target token, session selection, or logout request errors.
 async fn logout_for_single_target(
     config: &AppConfig,
     config_path: Option<&Path>,
@@ -538,6 +712,7 @@ async fn logout_for_single_target(
     target: ResolvedTarget,
     selector: &str,
 ) -> Result<AccountLogout> {
+    // 实现说明：用于 selector 已经匹配到 interface.mac 的快速路径，避免跨账号扫描。
     let account = target.account.username.clone();
     let (client, token) =
         session_client_for_target(config, config_path, config_updater, &target).await?;
@@ -554,12 +729,19 @@ async fn logout_for_single_target(
     })
 }
 
+/// Obtains a session client from the first target that works.
+///
+/// # Errors
+///
+/// Returns the last target error, or invalid configuration if no target exists.
 async fn session_client_for_any_target(
     config: &AppConfig,
     config_path: Option<&Path>,
     config_updater: &ConfigUpdateWriter,
     targets: &[ResolvedTarget],
 ) -> Result<(CampusClient, String)> {
+    // 实现说明：同账号多 target 可能只有部分网卡当前可达；逐个尝试比直接失败更适合
+    // unattended 运行。
     let mut last_error = None;
 
     for target in targets {
@@ -582,11 +764,21 @@ async fn session_client_for_any_target(
     }))
 }
 
+/// Selects the session to log out in simple-mode logout.
+///
+/// A selector wins first. Without selector, the function tries
+/// `logout.current_mac`, a single-session shortcut, then local route IP.
+///
+/// # Errors
+///
+/// Returns session lookup errors if no unambiguous candidate exists.
 fn select_logout_session<'a>(
     config: &AppConfig,
     sessions: &'a [Session],
     selector: Option<&str>,
 ) -> Result<&'a Session> {
+    // 实现说明：无 selector 时尽量避免误下线：current_mac 精确匹配优先，只有一个
+    // session 可安全选择，否则尝试用本机到 gateway 的源 IP 对应当前设备。
     if let Some(selector) = selector {
         return select_session_by_selector(config, sessions, selector);
     }
@@ -613,11 +805,18 @@ fn select_logout_session<'a>(
     Err(PortalError::NoLogoutCandidate)
 }
 
+/// Selects a session by MAC address or configured known-MAC name.
+///
+/// # Errors
+///
+/// Returns [`PortalError::SessionNotFound`] if no session matches, or
+/// [`PortalError::AmbiguousSessionName`] if a name maps to multiple known MACs.
 fn select_session_by_selector<'a>(
     config: &AppConfig,
     sessions: &'a [Session],
     selector: &str,
 ) -> Result<&'a Session> {
+    // 实现说明：直接 MAC 不经过 known_macs；名称 selector 必须唯一映射到一个 MAC。
     if let Ok(mac) = normalize_mac(selector) {
         return sessions
             .iter()
@@ -647,7 +846,10 @@ fn select_session_by_selector<'a>(
         .ok_or_else(|| PortalError::SessionNotFound(selector.to_string()))
 }
 
+/// Adds configured display metadata to a normalized session.
 fn named_session(config: &AppConfig, session: &Session) -> NamedSession {
+    // 实现说明：展示名称来自 known_macs；未命名设备统一显示“未知”，但仍保留所有
+    // 原始会话字段。
     NamedSession {
         name: known_mac_name(config, &session.mac)
             .unwrap_or("未知")
@@ -661,7 +863,10 @@ fn named_session(config: &AppConfig, session: &Session) -> NamedSession {
     }
 }
 
+/// Finds a known-MAC display name for a normalized MAC.
 fn known_mac_name<'a>(config: &'a AppConfig, mac: &str) -> Option<&'a str> {
+    // 实现说明：配置 MAC 和会话 MAC 都 normalize 后比较，容忍用户混用横线/冒号和
+    // 大小写。
     let normalized = normalize_mac(mac).ok()?;
     config.logout.known_macs.iter().find_map(|known| {
         let known_mac = normalize_mac(&known.mac).ok()?;
@@ -671,7 +876,17 @@ fn known_mac_name<'a>(config: &'a AppConfig, mac: &str) -> Option<&'a str> {
     })
 }
 
+/// Builds the redirect URL used to obtain a session API token.
+///
+/// The template may include `{local_ip}`, `{local_mac}`, and `{nas_ip}`. Missing
+/// required query parameters are appended after substitution.
+///
+/// # Errors
+///
+/// Returns configuration, MAC, NAS IP, or URL parse errors.
 fn session_login_redirect_url(config: &AppConfig, target: &ResolvedTarget) -> Result<String> {
+    // 实现说明：有接口绑定时使用真实接口身份；默认模式使用 fallback MAC 和 0.0.0.0
+    // 以兼容门户 token 获取。
     let template = &config.network.session_login_redirect_url;
     let (user_ip, user_mac) = redirect_user_identity(config, target)?;
     let nas_ip = nas_ip(config)?;
@@ -683,7 +898,15 @@ fn session_login_redirect_url(config: &AppConfig, target: &ResolvedTarget) -> Re
     ensure_redirect_query(value, &user_ip, &user_mac, &nas_ip)
 }
 
+/// Resolves the user IP and MAC to embed in the session redirect URL.
+///
+/// # Errors
+///
+/// Returns invalid configuration when a bound target lacks enough interface
+/// identity to construct a real redirect URL.
 fn redirect_user_identity(config: &AppConfig, target: &ResolvedTarget) -> Result<(String, String)> {
+    // 实现说明：接口 target 必须提供/可发现真实 local_ip 和 MAC；无接口 target 则走
+    // fallback 身份，避免简单模式强依赖本机接口探测。
     let Some(interface) = &target.interface else {
         return Ok(("0.0.0.0".to_string(), redirect_user_mac(config)?));
     };
@@ -708,7 +931,14 @@ fn redirect_user_identity(config: &AppConfig, target: &ResolvedTarget) -> Result
     Ok((local_ip.to_string(), mac))
 }
 
+/// Chooses a MAC address for default-mode redirect URL construction.
+///
+/// # Errors
+///
+/// Returns [`PortalError::InvalidMac`] if the chosen configured MAC is invalid.
 fn redirect_user_mac(config: &AppConfig) -> Result<String> {
+    // 实现说明：优先 current_mac，其次 known_macs，再其次 interface.mac；都没有时
+    // 生成一个本地管理地址用于 token 获取。
     if let Some(mac) = &config.logout.current_mac {
         return portal_mac(mac);
     }
@@ -734,12 +964,18 @@ fn redirect_user_mac(config: &AppConfig) -> Result<String> {
     Ok(generated_portal_mac())
 }
 
+/// Ensures a redirect URL contains the query parameters required by the portal.
+///
+/// # Errors
+///
+/// Returns [`PortalError::UrlParse`] if the substituted URL is invalid.
 fn ensure_redirect_query(
     value: String,
     user_ip: &str,
     user_mac: &str,
     nas_ip: &str,
 ) -> Result<String> {
+    // 实现说明：模板可由用户覆盖；这里只补缺失参数，不覆盖用户已经写好的 query。
     let mut url = Url::parse(&value).map_err(|source| PortalError::UrlParse {
         url: value.clone(),
         source,
@@ -768,7 +1004,10 @@ fn ensure_redirect_query(
     Ok(url.to_string())
 }
 
+/// Generates a locally administered MAC-like value for redirect token requests.
 fn generated_portal_mac() -> String {
+    // 实现说明：门户 token 获取只需要一个格式正确的 usermac；没有配置 MAC 时用时间种子
+    // 生成 02 开头的本地管理地址，避免固定值导致多实例混淆。
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos() as u64)
@@ -789,7 +1028,14 @@ fn generated_portal_mac() -> String {
         .join("-")
 }
 
+/// Returns the configured NAS IP required for online session operations.
+///
+/// # Errors
+///
+/// Returns [`PortalError::InvalidConfig`] when `network.nas_ip` is missing.
 fn nas_ip(config: &AppConfig) -> Result<String> {
+    // 实现说明：已在线时无法再通过 captive redirect 发现 nasip，因此 list/logout 需要
+    // 用户先运行一次未登录 login 捕获，或手动配置。
     config.network.nas_ip.clone().ok_or_else(|| {
         PortalError::InvalidConfig(
             "已在线时执行 list/logout 需要 network.nas_ip；请先在未登录时运行一次 login 自动捕获，或从重定向 Location 头中手动填写，例如 nasip=10.6.33.10"
@@ -798,22 +1044,34 @@ fn nas_ip(config: &AppConfig) -> Result<String> {
     })
 }
 
+/// Extracts `nasip` from a portal redirect URL.
+///
+/// Returns `None` if the URL is invalid, lacks `nasip`, or has an empty value.
 pub fn nas_ip_from_redirect_url(redirect_url: &str) -> Option<String> {
+    // 实现说明：query key 按大小写不敏感匹配，兼容网关参数大小写变化。
     let url = Url::parse(redirect_url).ok()?;
     url.query_pairs().find_map(|(key, value)| {
         (key.eq_ignore_ascii_case("nasip") && !value.is_empty()).then(|| value.into_owned())
     })
 }
 
+/// Coordinates one asynchronous write-back of a discovered NAS IP.
 struct ConfigUpdateWriter {
+    /// NAS IP loaded at process start, used to skip no-op writes.
     initial_nas_ip: Option<String>,
+    /// Configuration file path eligible for write-back.
     config_path: Option<PathBuf>,
+    /// Guard that ensures only one write-back task is spawned.
     nas_ip_write_started: AtomicBool,
+    /// Join handle for the optional write-back task.
     nas_ip_write: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl ConfigUpdateWriter {
+    /// Creates a writer for a configuration snapshot and optional path.
     fn new(config: &AppConfig, config_path: Option<PathBuf>) -> Self {
+        // 实现说明：保存 initial_nas_ip 后，即使运行中 config 被 Arc 共享也能判断
+        // redirect 捕获值是否真的需要落盘。
         Self {
             initial_nas_ip: config.network.nas_ip.clone(),
             config_path,
@@ -822,7 +1080,10 @@ impl ConfigUpdateWriter {
         }
     }
 
+    /// Schedules a write-back if a redirect URL contains a new NAS IP.
     fn update_nas_ip_from_redirect(&self, config_path: Option<&Path>, redirect_url: &str) {
+        // 实现说明：多 target 可能同时看到 redirect；AtomicBool 保证只启动一个写任务，
+        // 避免并发重写同一个 TOML 文件。
         let Some(config_path) = config_path else {
             return;
         };
@@ -866,7 +1127,9 @@ impl ConfigUpdateWriter {
         *self.nas_ip_write.lock().expect("config write handle lock") = Some(handle);
     }
 
+    /// Waits for the pending write-back task, if one was started.
     async fn wait(&self) {
+        // 实现说明：主流程结束前等待配置写回，避免 CLI 退出时 tokio 任务被直接丢弃。
         let handle = self
             .nas_ip_write
             .lock()
@@ -880,11 +1143,24 @@ impl ConfigUpdateWriter {
     }
 }
 
+/// Converts a MAC address into the dash-separated format used in redirect URLs.
+///
+/// # Errors
+///
+/// Returns [`PortalError::InvalidMac`] if `mac` cannot be normalized.
 fn portal_mac(mac: &str) -> Result<String> {
+    // 实现说明：normalize_mac 产出冒号格式；门户 redirectUrl 观察到的是横线格式。
     Ok(normalize_mac(mac)?.replace(':', "-"))
 }
 
+/// Finds the local IP address that would be used to reach the configured gateway.
+///
+/// # Errors
+///
+/// Returns URL, DNS resolution, or UDP socket errors.
 fn local_ip_for_gateway(config: &AppConfig) -> Result<Option<IpAddr>> {
+    // 实现说明：UDP connect 不发包，但会让操作系统选择路由和源地址，适合识别当前
+    // 默认出口对应的会话 IP。
     let parsed =
         Url::parse(&config.network.gateway_base()).map_err(|source| PortalError::UrlParse {
             url: config.network.gateway.clone(),
@@ -914,7 +1190,10 @@ fn local_ip_for_gateway(config: &AppConfig) -> Result<Option<IpAddr>> {
     Ok(None)
 }
 
+/// Groups targets by account username while preserving first-seen group order.
 fn group_targets_by_username(targets: Vec<ResolvedTarget>) -> Vec<Vec<ResolvedTarget>> {
+    // 实现说明：HashMap 只保存 username 到 group index 的映射，实际 group 顺序由 Vec
+    // push 保持。
     let mut group_indexes = HashMap::<String, usize>::new();
     let mut groups: Vec<Vec<ResolvedTarget>> = Vec::new();
 
@@ -930,12 +1209,17 @@ fn group_targets_by_username(targets: Vec<ResolvedTarget>) -> Vec<Vec<ResolvedTa
     groups
 }
 
+/// Runs all targets for one username sequentially.
+///
+/// Returns `true` if any target failed.
 async fn run_target_group(
     config: Arc<AppConfig>,
     config_path: Arc<Option<PathBuf>>,
     config_updater: Arc<ConfigUpdateWriter>,
     targets: Vec<ResolvedTarget>,
 ) -> bool {
+    // 实现说明：组内不短路，尽可能完成同账号的后续 target，并把失败汇总给上层
+    // PartialFailure。
     let mut failed = false;
 
     for target in targets {
@@ -950,12 +1234,19 @@ async fn run_target_group(
     failed
 }
 
+/// Runs the login flow for one resolved target.
+///
+/// # Errors
+///
+/// Returns binding, client, probe, login, or automatic-logout errors.
 async fn run_target(
     config: &AppConfig,
     config_path: Option<&Path>,
     config_updater: &ConfigUpdateWriter,
     target: &ResolvedTarget,
 ) -> Result<()> {
+    // 实现说明：先 probe，在线则不重复登录；被 portal redirect 时才执行登录流程，并把
+    // redirect 中的新 nasip 交给异步写回器。
     let binding = target.network_binding()?;
     let client = CampusClient::new(config.network.clone(), binding.clone())?;
 
@@ -980,12 +1271,19 @@ async fn run_target(
     }
 }
 
+/// Logs in and optionally logs out one old session before retrying.
+///
+/// # Errors
+///
+/// Returns device-limit, missing-token, rejected-login, or logout/retry errors.
 async fn login_with_optional_logout(
     config: &AppConfig,
     target: &ResolvedTarget,
     client: &CampusClient,
     redirect_url: &str,
 ) -> Result<()> {
+    // 实现说明：只有 Overloaded 且 logout.enabled 时才进入 session API；成功分支只
+    // 打印 token 前缀，避免完整 token 泄漏到日志。
     match client.login(&target.account, redirect_url).await? {
         LoginStatus::Success { token } => {
             let token_preview = token_preview(token.as_deref()).unwrap_or_default();
@@ -1012,6 +1310,11 @@ async fn login_with_optional_logout(
     }
 }
 
+/// Logs out one selected session and retries the original login.
+///
+/// # Errors
+///
+/// Returns session-list, candidate-selection, logout, or retry-login errors.
 async fn logout_one_and_retry(
     config: &AppConfig,
     target: &ResolvedTarget,
@@ -1019,6 +1322,8 @@ async fn logout_one_and_retry(
     redirect_url: &str,
     token: &str,
 ) -> Result<()> {
+    // 实现说明：下线候选策略在 session::choose_logout_mac 中集中维护；这里用返回的
+    // normalized MAC 找回完整 Session，以便 logout payload 使用 api_mac。
     let sessions = client.list_sessions(token).await?;
     let session_macs = sessions
         .iter()
@@ -1061,11 +1366,15 @@ async fn logout_one_and_retry(
     }
 }
 
+/// Returns a short token prefix for logs.
 fn token_preview(token: Option<&str>) -> Option<String> {
+    // 实现说明：只取前 10 个 char，既能关联日志事件，又不暴露完整授权 token。
     token.map(|value| value.chars().take(10).collect())
 }
 
+/// Logs the network binding used by an HTTP client.
 pub(crate) fn log_network_binding(target_id: &str, binding: &NetworkBinding) {
+    // 实现说明：portal::CampusClient 创建完成后调用，方便排查多 WAN 绑定是否生效。
     debug!(
         target = target_id,
         bind_device = binding.interface_name.as_deref().unwrap_or("default"),
@@ -1084,7 +1393,10 @@ mod tests {
     use crate::config::{AccountConfig, InterfaceConfig, LogoutConfig, NetworkConfig};
 
     #[test]
+    /// Verifies session redirect URL construction for a bound interface target.
     fn session_redirect_url_uses_target_interface_identity() {
+        // 实现说明：绑定接口时 userip/usermac 必须来自 target.interface，而不是默认
+        // fallback 身份。
         let config = test_config(
             Some("10.6.33.10"),
             LogoutConfig {
@@ -1112,7 +1424,10 @@ mod tests {
     }
 
     #[test]
+    /// Verifies default targets use fallback redirect identity.
     fn session_redirect_url_without_interface_uses_fallback_identity() {
+        // 实现说明：无接口 target 使用 0.0.0.0 加 current_mac，覆盖简单模式 token
+        // 获取路径。
         let config = test_config(
             Some("10.6.33.10"),
             LogoutConfig {
@@ -1134,7 +1449,9 @@ mod tests {
         );
     }
 
+    /// Builds a minimal test configuration.
     fn test_config(nas_ip: Option<&str>, logout: LogoutConfig) -> AppConfig {
+        // 实现说明：显式填满 NetworkConfig，避免测试被 Default 后续改动意外影响。
         AppConfig {
             network: NetworkConfig {
                 gateway: "http://10.184.6.32".to_string(),
@@ -1160,7 +1477,9 @@ mod tests {
         }
     }
 
+    /// Builds a minimal account used by redirect URL tests.
     fn test_account() -> AccountConfig {
+        // 实现说明：账户内容不会发起真实登录，只需满足 ResolvedTarget 字段。
         AccountConfig {
             id: Some("main".to_string()),
             username: "u@xjtu".to_string(),

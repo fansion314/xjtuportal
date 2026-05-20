@@ -1,45 +1,122 @@
 # AGENTS.md
 
-Guidance for future agents working in this repository.
+Guidance for AI agents and maintainers working in this repository.
 
-## Project Shape
+## Project Overview
 
-- This project is now a Rust CLI. Do not restore the old Go/YAML implementation or interactive shell UI.
-- Keep the CLI focused on unattended campus portal login. The default behavior is to run the automatic login flow directly.
-- Configuration is TOML-only. Use `config.example.toml` as the public shape and keep runtime URLs in `[network]`.
+`xjtuportal` is a Rust CLI for unattended XJTU campus portal login, session listing, and automatic logout when an account reaches the device limit.
 
-## Portal Protocol
+Core goals:
 
-- Login uses the v3 encrypted endpoint:
-  `POST /portal-conversion/api/v3/portal/connect`.
-- Redirect probing must use plain HTTP `http://1.1.1.1` with redirects disabled. Do not switch this to HTTPS or a domain.
-- Request/response crypto follows the Python reverse-engineering scripts in `exp/`: AES-128-CBC, key and IV both `1234567890000000`, PKCS#7 padding, hex-encoded bodies, compact JSON.
-- Session list and automatic logout must use the verified v3 encrypted APIs:
-  - `POST /portal-conversion/api/v3/session/list` with an empty body, encrypted response.
-  - `POST /portal-conversion/api/v3/session/acctUniqueId` with encrypted `acctUniqueId` and `mac`.
-- Do not use the old Go-era v2 session/token/logout endpoints; they were verified as unavailable.
-- The token for session APIs comes from the login response that reports the device-limit condition. If that response lacks a token, fail clearly instead of falling back to old token APIs.
+- Keep the default CLI path focused on automatic unattended login.
+- Support simple single-account usage and advanced multi-account/multi-interface usage.
+- Preserve the verified portal v3 encrypted protocol.
+- Keep configuration TOML-only and runtime URLs under `[network]`.
 
-## Interface Binding
+## Use A Staged Workflow
 
-- For configured interfaces, use `reqwest::ClientBuilder::interface(name)` so Linux/OpenWrt uses `SO_BINDTODEVICE`.
-- Do not rely on source IP binding alone. On OpenWrt with mwan3 policy routing, binding only `local_ip` can still route through the wrong WAN.
-- Keep optional `local_ip` as an additional source-address hint, not as the primary interface selection mechanism.
+Use a staged workflow for code changes. Do not skip stages unless the user explicitly asks for a different workflow.
 
-## Automatic Logout
+### Stage 1: Exploration And Planning Only
 
-- Preserve the logout candidate strategy:
-  first choose a session MAC not in `logout.known_macs`; if all are known, choose by `known_macs` order; otherwise fall back to the first valid session.
-- Keep both normalized MACs for local comparison and the API-returned MAC string for the logout payload. The portal may expect the original MAC format.
+- Read [ARCHITECTURE.md](ARCHITECTURE.md) first when the task requires understanding or changing code.
+- Then read [docs/api-md/xjtuportal/index.md](docs/api-md/xjtuportal/index.md) if you need to understand public functions or module APIs.
+- Read only the relevant source files after the architecture/API docs point you there.
+- Do not edit files.
+- Summarize the current implementation.
+- Propose a minimal implementation plan.
+- List files that need changes.
+- List tests that should be added or updated.
+- Identify risks, including protocol, platform, config, and compatibility risks.
 
-## Validation
+Stop after Stage 1 and wait for user approval.
 
-Before considering code changes done, run:
+### Stage 2: Implementation
+
+- Follow the approved minimal plan.
+- Use a single worker agent if delegation is needed.
+- Do not modify unrelated files.
+- Do not introduce new dependencies unless necessary.
+- Preserve existing architecture boundaries and invariants from [ARCHITECTURE.md](ARCHITECTURE.md).
+- After editing, run:
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+./scripts/check.sh
 ```
 
-For release metadata changes, update both `Cargo.toml` and the root `xjtuportal` package entry in `Cargo.lock`.
+- If the check script fails, inspect the logs and fix the root cause.
+- Summarize changed files and verification results.
+
+### Stage 3: Independent Review
+
+- Review the final diff.
+- Do not edit files during this stage.
+- Check correctness, tests, error handling, maintainability, and platform issues.
+- Pay special attention to OpenWrt/Linux interface binding, portal protocol compatibility, and config compatibility.
+- Report findings by severity.
+- If there are serious issues, propose a minimal fix plan and wait for approval before editing again.
+
+## Architecture And API Docs
+
+Read [ARCHITECTURE.md](ARCHITECTURE.md) when, and only when, you need project architecture context or need to understand/modify code. Do not begin code tasks by randomly reading source files; use the architecture document to build the map first.
+
+After reading the architecture document, prefer [docs/api-md/xjtuportal/index.md](docs/api-md/xjtuportal/index.md) when you need to use public functions from project modules. The generated API docs are hierarchical: start at `index.md`, then follow links to module-specific Markdown files.
+
+If the generated API docs are missing or stale, fall back to rustdoc comments and source code, then regenerate the docs before committing.
+
+## Code Documentation Standards
+
+- Start every source file/module with module-level documentation that explains its purpose, important constraints, and project-specific context future maintainers need to know.
+- Document every struct and function with API-facing rustdoc. Readers of generated Markdown docs should understand what the item does, how to use it, and when relevant, its `Examples` or `Errors`.
+- Put implementation notes inside the function body near the top, before the main logic. These notes should explain the design idea, invariants, or tricky choices useful when changing the implementation.
+- Keep the pattern consistent:
+
+```rust
+/// API documentation extracted into Markdown docs.
+pub fn example(input: Input) -> Result<Output> {
+    // Implementation note for maintainers reading the source.
+
+    todo!()
+}
+```
+
+## Validation Command
+
+After any code change, run:
+
+```bash
+./scripts/check.sh
+```
+
+The script runs:
+
+- `cargo fmt --check`
+- `cargo test`
+- `cargo clippy --all-targets -- -D warnings`
+
+Do not consider code changes complete until the script passes, or until you clearly report why it could not be run.
+
+## Commit Workflow
+
+Before committing code or API documentation changes:
+
+1. Run the validation script:
+
+```bash
+./scripts/check.sh
+```
+
+2. Regenerate Markdown API docs:
+
+```bash
+cargo doc-md --no-deps -o docs/api-md
+```
+
+3. Use the [$git-commit](/Users/peilin/.cc-switch/skills/git-commit/SKILL.md) skill to create a conventional commit.
+
+Commit rules:
+
+- Use one logical change per commit.
+- Never commit secrets, credentials, private config, or local-only artifacts.
+- Do not skip hooks unless the user explicitly asks.
+- Do not use destructive git commands without explicit user approval.

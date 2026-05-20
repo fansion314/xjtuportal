@@ -1,3 +1,10 @@
+//! Command-line interface for the unattended campus portal login tool.
+//!
+//! The binary keeps user interaction intentionally minimal: without a subcommand
+//! it runs the automatic login flow directly. Subcommands expose targeted login,
+//! session listing, logout, and shell completion generation while delegating all
+//! portal behavior to the library crate.
+
 use std::{path::PathBuf, process::ExitCode};
 
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
@@ -10,6 +17,7 @@ use xjtuportal::{
     run_target_login,
 };
 
+/// Help template for the root command.
 const ROOT_HELP_TEMPLATE: &str = "\
 西安交大校园网自动登录工具
 
@@ -18,12 +26,14 @@ const ROOT_HELP_TEMPLATE: &str = "\
 
 {all-args}{after-help}";
 
+/// Help template shared by subcommands.
 const COMMAND_HELP_TEMPLATE: &str = "\
 {about-with-newline}
 用法: {usage}
 
 {all-args}{after-help}";
 
+/// Parsed root CLI arguments.
 #[derive(Debug, Parser)]
 #[command(
     version,
@@ -38,8 +48,10 @@ const COMMAND_HELP_TEMPLATE: &str = "\
     subcommand_help_heading = "命令"
 )]
 struct Args {
+    /// Optional path to `config.toml`.
     #[arg(short, long, value_name = "FILE", global = true, help = "配置文件路径")]
     config: Option<PathBuf>,
+    /// Tracing log filter level.
     #[arg(
         long,
         default_value = "info",
@@ -47,12 +59,14 @@ struct Args {
         help = "日志级别，例如 error、warn、info、debug"
     )]
     log_level: String,
+    /// Forces legacy simple-mode behavior even when advanced targets exist.
     #[arg(
         long,
         global = true,
         help = "即使配置了多个 targets，也只使用 [default_account] 按单目标模式执行"
     )]
     one: bool,
+    /// Explicit help flag because the default clap help flag is customized.
     #[arg(
         short = 'h',
         long = "help",
@@ -61,6 +75,7 @@ struct Args {
         help = "显示帮助信息"
     )]
     help: Option<bool>,
+    /// Explicit version flag because the default clap version flag is customized.
     #[arg(
         short = 'V',
         long = "version",
@@ -69,10 +84,12 @@ struct Args {
         help = "显示版本信息"
     )]
     version: Option<bool>,
+    /// Optional command; absence means run automatic login.
     #[command(subcommand)]
     command: Option<Command>,
 }
 
+/// Supported CLI subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
     /// 执行自动登录；多目标配置会登录所有 targets。
@@ -112,8 +129,14 @@ enum Command {
     },
 }
 
+/// Program entry point.
+///
+/// Returns process exit code `0` for success, `1` for runtime failures or
+/// partial multi-target failures, and `2` for invalid configuration.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    // 实现说明：current_thread runtime 足够支撑 reqwest async I/O，同时适合小型 CLI
+    // 和 OpenWrt 等资源有限环境。
     let args = Args::parse();
     if let Some(Command::Completions { shell }) = &args.command {
         let mut command = Args::command();
@@ -234,14 +257,26 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Converts a multi-target run status into a process exit code.
 fn run_exit_code(status: RunStatus) -> Option<ExitCode> {
+    // 实现说明：完全成功用 None 表示继续走 ExitCode::SUCCESS；部分失败映射为 1。
     match status {
         RunStatus::Success => None,
         RunStatus::PartialFailure => Some(ExitCode::from(1)),
     }
 }
 
+/// Finds the default configuration path.
+///
+/// The executable directory is checked first, then the current working
+/// directory.
+///
+/// # Errors
+///
+/// Returns [`std::io::ErrorKind::NotFound`] if neither location contains
+/// `config.toml`, or propagates filesystem inspection errors.
 fn default_config_path() -> std::io::Result<PathBuf> {
+    // 实现说明：先找程序同目录适合部署成单文件服务；再找当前目录适合开发和手动运行。
     let executable = std::env::current_exe()?;
     let executable_config = executable
         .parent()
@@ -263,7 +298,9 @@ fn default_config_path() -> std::io::Result<PathBuf> {
     ))
 }
 
+/// Prints grouped account sessions to stdout.
 fn print_account_sessions(groups: &[AccountSessions]) {
+    // 实现说明：账号之间空一行，单账号内部复用 print_sessions 表格格式。
     for (index, group) in groups.iter().enumerate() {
         if index > 0 {
             println!();
@@ -273,7 +310,9 @@ fn print_account_sessions(groups: &[AccountSessions]) {
     }
 }
 
+/// Prints a session table to stdout.
 fn print_sessions(sessions: &[NamedSession]) {
+    // 实现说明：手写 display width 是为了让中文表头/名称和 ASCII 列在终端中对齐。
     println!(
         "{}  {}  {}  {}  登录时间",
         pad_display("名称", 9),
@@ -293,17 +332,23 @@ fn print_sessions(sessions: &[NamedSession]) {
     }
 }
 
+/// Pads a string to a display width using spaces.
 fn pad_display(value: &str, width: usize) -> String {
+    // 实现说明：width 是终端列宽，不是字节数或 char 数；中文宽字符按 2 列计算。
     let display_width = terminal_display_width(value);
     let padding = width.saturating_sub(display_width);
     format!("{value}{}", " ".repeat(padding))
 }
 
+/// Calculates terminal display width for a string.
 fn terminal_display_width(value: &str) -> usize {
+    // 实现说明：逐字符相加即可满足当前表格需求，不引入额外 Unicode width 依赖。
     value.chars().map(char_display_width).sum()
 }
 
+/// Estimates terminal display width for one character.
 fn char_display_width(value: char) -> usize {
+    // 实现说明：覆盖常见 CJK 宽字符区间；控制字符按 0，其他字符按 1。
     match value {
         '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}' => 0,
         '\u{1100}'..='\u{115f}'
@@ -320,15 +365,21 @@ fn char_display_width(value: char) -> usize {
     }
 }
 
+/// Returns a display name, falling back to `未知`.
 fn display_name(name: &str) -> &str {
+    // 实现说明：空名称只影响展示，不改变底层 session 数据。
     if name.is_empty() { "未知" } else { name }
 }
 
+/// Returns a display value, falling back to `-`.
 fn display_value(value: &str) -> &str {
+    // 实现说明：表格中用短占位符表示 portal 未返回字段。
     if value.is_empty() { "-" } else { value }
 }
 
+/// Maps an error to the CLI exit code and logs it.
 fn exit_code_for_error(err: PortalError) -> ExitCode {
+    // 实现说明：配置问题返回 2，便于脚本区分“需要用户修配置”和“运行时网络/门户失败”。
     match err {
         PortalError::InvalidConfig(err) => {
             tracing::error!("配置无效: {err}");
@@ -341,7 +392,10 @@ fn exit_code_for_error(err: PortalError) -> ExitCode {
     }
 }
 
+/// Initializes process-wide tracing logging.
 fn init_logging(level: &str) {
+    // 实现说明：非法 filter 自动回退 info，避免用户传错日志级别时 CLI 在真正工作前
+    // 失败。
     let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
